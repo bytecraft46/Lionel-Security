@@ -97,6 +97,7 @@ export function roleLabel(role) {
 export const NAV_BY_ROLE = {
   CEO: [
     { id: 'posture', label: 'Posture' },
+    { id: 'checkins', label: 'Check-ins' },
     { id: 'zones', label: 'Zones & Sites' },
     { id: 'risk', label: 'Risk & Compliance' },
     { id: 'incidents', label: 'Emergencies' },
@@ -105,6 +106,7 @@ export const NAV_BY_ROLE = {
   ],
   OPS_MANAGER: [
     { id: 'control', label: 'Control Room' },
+    { id: 'checkins', label: 'Check-ins' },
     { id: 'zones', label: 'Zones & Sites' },
     { id: 'weapons', label: 'Armoury' },
     { id: 'incidents', label: 'Incident Triage' },
@@ -112,6 +114,7 @@ export const NAV_BY_ROLE = {
   ],
   SUPERVISOR: [
     { id: 'locations', label: 'My Locations' },
+    { id: 'checkins', label: 'Check-ins' },
     { id: 'alerts', label: 'Command Alerts' },
     { id: 'inspections', label: 'Inspections' },
     { id: 'incidents', label: 'Incidents' },

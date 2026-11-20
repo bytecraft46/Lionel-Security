@@ -15,14 +15,18 @@ import {
   StatusBadge,
 } from '../../components/ui';
 import RosterDrawer from '../shared/RosterDrawer';
+import GuardZoneMap from '../../components/map/GuardZoneMap';
 import IncidentPanel from '../ops/IncidentPanel';
 import ArmouryPanel from '../ops/ArmouryPanel';
 import TeamPanel from '../shared/TeamPanel';
 import AuditLogPanel from '../shared/AuditLogPanel';
+import CheckInOutPanel from '../shared/CheckInOutPanel';
+import OverdueCheckInAlerts from '../shared/OverdueCheckInAlerts';
 
 export default function CEODashboard({ tab }) {
   const [overview, setOverview] = useState(null);
   const [weapons, setWeapons] = useState([]);
+  const [guards, setGuards] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [broadcasts, setBroadcasts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,16 +37,18 @@ export default function CEODashboard({ tab }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [overviewData, weaponData, incidentData, broadcastData] = await Promise.all([
+      const [overviewData, weaponData, incidentData, broadcastData, guardData] = await Promise.all([
         api('/api/dashboard/overview'),
         api('/api/weapons'),
         api('/api/incidents'),
         api('/api/broadcasts'),
+        api('/api/guards'),
       ]);
       setOverview(overviewData);
       setWeapons(weaponData.weapons || []);
       setIncidents(incidentData.incidents || []);
       setBroadcasts(broadcastData.broadcasts || []);
+      setGuards(guardData.guards || []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -119,6 +125,8 @@ export default function CEODashboard({ tab }) {
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
+      <OverdueCheckInAlerts />
+
       {(kpis.active_emergencies > 0 || kpis.vacant_posts > 0) && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5">
           <ShieldAlert size={16} className="text-rose-500" />
@@ -176,6 +184,14 @@ export default function CEODashboard({ tab }) {
 
       {(tab === 'posture' || !tab) && (
         <>
+          <Panel
+            title="Guard deployment map"
+            subtitle="Guards plotted by zone colour · hover a marker for name, supervisor and location"
+            actions={<Badge tone="neutral">{guards.length} guards · {zones.length} zones</Badge>}
+          >
+            <GuardZoneMap guards={guards} locations={locations} zones={zones} />
+          </Panel>
+
           <Panel
             title="Zone & location status matrix"
             subtitle="Click any location for the read-only deployment roster"
@@ -260,6 +276,10 @@ export default function CEODashboard({ tab }) {
             </Panel>
           </div>
         </>
+      )}
+
+      {tab === 'checkins' && (
+        <CheckInOutPanel role="CEO" zones={zones} locations={locations} />
       )}
 
       {(tab === 'zones' || tab === 'risk') && (

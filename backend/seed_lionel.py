@@ -20,8 +20,6 @@ from models import (
     Roster,
     SiteInspection,
     User,
-    Weapon,
-    WeaponLog,
     Zone,
     dumps,
 )
@@ -298,42 +296,7 @@ def seed():
                 )
             )
 
-        # Armoury: one weapon per two posts, plus issued examples.
-        weapon_number = 0
-        for index, post in enumerate(posts):
-            if index % 2:
-                continue
-            weapon_number += 1
-            weapon = Weapon(
-                weapon_type=("RIFLE", "SHOTGUN", "PISTOL")[weapon_number % 3],
-                make_model=("G3", "Mossberg 500", "Beretta 92")[weapon_number % 3],
-                serial_number=f"LS-WPN-{weapon_number:04d}",
-                licence_number=f"LIC-2026-{weapon_number:04d}",
-                licence_expiry_date=date.today()
-                + timedelta(days=20 if weapon_number % 7 == 0 else 700),
-                ammunition_count=40,
-                assigned_post_id=post.id,
-                condition="SERVICEABLE",
-                armoury_status="AVAILABLE",
-                last_inspection_date=today,
-            )
-            db.session.add(weapon)
-            db.session.flush()
-            if index % 4 == 0 and post_guards[post.id]:
-                guard = post_guards[post.id][0]
-                weapon.issued_to_guard_id = guard.id
-                weapon.issued_at = datetime.utcnow()
-                weapon.armoury_status = "ISSUED"
-                db.session.add(
-                    WeaponLog(
-                        weapon_id=weapon.id,
-                        action="ISSUE",
-                        guard_id=guard.id,
-                        post_id=post.id,
-                        actor_id=post.supervisor_id,
-                        notes="Seed issue",
-                    )
-                )
+        # Armoury starts empty: arms and their allotments are registered in the app.
 
         # Command broadcasts
         critical = CommandBroadcast(
@@ -422,7 +385,6 @@ def seed():
         print("[seed] Zones:", Zone.query.count())
         print("[seed] Guards:", User.query.filter_by(role="GUARD").count())
         print("[seed] Posts:", Post.query.count())
-        print("[seed] Weapons:", Weapon.query.count())
         print("[seed] Seeded Lionel Security dataset.")
         print(
             "[seed] Logins: ceo@lionel.pk / ops@lionel.pk / admin@lionel.pk / "

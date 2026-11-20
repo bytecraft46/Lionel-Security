@@ -216,6 +216,8 @@ class GuardProfile(db.Model):
     assigned_post_id = db.Column(
         db.String(36), db.ForeignKey("posts.id", ondelete="SET NULL"), nullable=True
     )
+    duty_start = db.Column(db.String(5), nullable=True)  # local HH:MM
+    duty_end = db.Column(db.String(5), nullable=True)  # local HH:MM
     employment_status = db.Column(db.String(20), nullable=False, default="ACTIVE")
 
     user = db.relationship(
@@ -259,6 +261,8 @@ class GuardProfile(db.Model):
             "assigned_post_name": self.assigned_post.name
             if self.assigned_post
             else None,
+            "duty_start": self.duty_start,
+            "duty_end": self.duty_end,
             "employment_status": self.employment_status,
         }
 
@@ -331,6 +335,7 @@ class Post(db.Model):
     )
     name = db.Column(db.String(120), nullable=False)
     client_name = db.Column(db.String(120), nullable=True)
+    area = db.Column(db.String(120), nullable=True)
     required_strength = db.Column(db.Integer, nullable=False, default=1)
     lat = db.Column(db.Float, nullable=False)
     lng = db.Column(db.Float, nullable=False)
@@ -362,6 +367,7 @@ class Post(db.Model):
             else None,
             "name": self.name,
             "client_name": self.client_name,
+            "area": self.area,
             "required_strength": self.required_strength,
             "lat": self.lat,
             "lng": self.lng,
@@ -566,6 +572,12 @@ class Weapon(db.Model):
     condition = db.Column(db.String(20), nullable=False, default="SERVICEABLE")
     last_inspection_date = db.Column(db.Date, nullable=True)
     armoury_status = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+    # Free-form allocation target for arms held at an unregistered location.
+    alloc_location = db.Column(db.String(120), nullable=True)
+    alloc_area = db.Column(db.String(120), nullable=True)
+    alloc_lat = db.Column(db.Float, nullable=True)
+    alloc_lng = db.Column(db.Float, nullable=True)
+    alloc_client = db.Column(db.String(120), nullable=True)
     created_at = db.Column(db.DateTime, default=utcnow, nullable=False)
 
     assigned_post = db.relationship("Post", foreign_keys=[assigned_post_id])
@@ -593,6 +605,11 @@ class Weapon(db.Model):
             "assigned_post_name": self.assigned_post.name
             if self.assigned_post
             else None,
+            "alloc_location": self.alloc_location,
+            "alloc_area": self.alloc_area,
+            "alloc_lat": self.alloc_lat,
+            "alloc_lng": self.alloc_lng,
+            "alloc_client": self.alloc_client,
             "issued_to_guard_id": self.issued_to_guard_id,
             "issued_to_name": self.issued_to.full_name if self.issued_to else None,
             "issued_at": self.issued_at.isoformat() if self.issued_at else None,

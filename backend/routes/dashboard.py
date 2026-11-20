@@ -278,6 +278,13 @@ def create_location():
     if any(post.name.strip().lower() == name.lower() for post in zone.posts):
         return jsonify({"error": "This zone already has a site with that name."}), 409
 
+    area = (data.get("area") or "").strip()
+    if area:
+        # Store the zone's own spelling of the area when it matches one.
+        area = next(
+            (row for row in zone.area_list if row.lower() == area.lower()), area
+        )
+
     try:
         strength = int(data.get("required_strength") or 1)
     except (TypeError, ValueError):
@@ -313,6 +320,7 @@ def create_location():
         zone_id=zone.id,
         name=name,
         client_name=(data.get("client_name") or "").strip() or None,
+        area=area or None,
         address=(data.get("address") or "").strip() or None,
         required_strength=strength,
         lat=lat if lat is not None else lat_default,
@@ -325,7 +333,7 @@ def create_location():
         "SITE_CREATED",
         "site",
         post.id,
-        {"name": post.name, "zone_id": zone.id, "required_strength": strength},
+        {"name": post.name, "zone_id": zone.id, "area": post.area, "required_strength": strength},
     )
     db.session.commit()
     return jsonify({"message": f'Site "{name}" added to {zone.name}.', "location": post.to_dict()}), 201

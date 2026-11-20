@@ -21,6 +21,8 @@ const EMPTY_FORM = {
   zone_id: '',
   assigned_post_id: '',
   cnic: '',
+  duty_start: '08:00',
+  duty_end: '20:00',
 };
 
 export default function TeamPanel({ role, zones = [], locations = [], onChanged }) {
@@ -82,6 +84,8 @@ export default function TeamPanel({ role, zones = [], locations = [], onChanged 
             employee_id: form.employee_id || undefined,
             password: form.password,
             cnic: form.cnic || undefined,
+            duty_start: form.duty_start,
+            duty_end: form.duty_end,
             zone_id: post?.zone_id || undefined,
             assigned_post_id: form.assigned_post_id || undefined,
           },
@@ -217,6 +221,26 @@ export default function TeamPanel({ role, zones = [], locations = [], onChanged 
                   onChange={(event) => update('cnic', event.target.value)}
                 />
               </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Duty start time" hint="Mandatory — 24-hour clock">
+                  <input
+                    type="time"
+                    className="input"
+                    required
+                    value={form.duty_start}
+                    onChange={(event) => update('duty_start', event.target.value)}
+                  />
+                </Field>
+                <Field label="Duty end time" hint="Mandatory — overnight allowed">
+                  <input
+                    type="time"
+                    className="input"
+                    required
+                    value={form.duty_end}
+                    onChange={(event) => update('duty_end', event.target.value)}
+                  />
+                </Field>
+              </div>
             </>
           )}
 

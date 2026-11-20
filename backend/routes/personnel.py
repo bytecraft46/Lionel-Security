@@ -33,6 +33,22 @@ def _date(value):
         return None
 
 
+def _duty_window(data: dict):
+    """Validate a guard's mandatory duty start/end times (local HH:MM)."""
+    raw_start = str(data.get("duty_start") or "").strip()
+    raw_end = str(data.get("duty_end") or "").strip()
+    if not raw_start or not raw_end:
+        return None, None, "Duty start time and duty end time are required."
+    try:
+        start = datetime.strptime(raw_start, "%H:%M")
+        end = datetime.strptime(raw_end, "%H:%M")
+    except ValueError:
+        return None, None, "Duty times must use the 24-hour HH:MM format."
+    if start.time() == end.time():
+        return None, None, "Duty start and duty end time cannot be the same."
+    return start.strftime("%H:%M"), end.strftime("%H:%M"), None
+
+
 def _apply_guard_fields(guard: User, data: dict):
     profile = guard.profile
     if profile is None:
@@ -126,10 +142,21 @@ def get_guard(guard_id):
 def create_guard():
     actor = current_user()
     data = request.get_json(silent=True) or {}
-    required = ("full_name", "phone_number", "password")
+    required = ("full_name", "phone_number", "password", "duty_start", "duty_end")
     missing = [field for field in required if not data.get(field)]
     if missing:
-        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+        labels = {
+            "full_name": "full name",
+            "phone_number": "phone number",
+            "password": "password",
+            "duty_start": "duty start time",
+            "duty_end": "duty end time",
+        }
+        subject = ", ".join(labels.get(field, field) for field in missing)
+        return jsonify({"error": f"{subject} {'is' if len(missing) == 1 else 'are'} required."}), 400
+    duty_start, duty_end, duty_error = _duty_window(data)
+    if duty_error:
+        return jsonify({"error": duty_error}), 400
     policy_error = password_policy_error(data["password"])
     if policy_error:
         return jsonify({"error": policy_error}), 400
@@ -164,6 +191,8 @@ def create_guard():
     db.session.add(guard)
     db.session.flush()
     _apply_guard_fields(guard, data)
+    guard.profile.duty_start = duty_start
+    guard.profile.duty_end = duty_end
     record_audit(
         "GUARD_CREATED",
         "user",
@@ -192,12 +221,28 @@ def update_guard(guard_id):
     if "zone_id" in data:
         assert_zone_access(actor, data["zone_id"])
         guard.zone_id = data.get("zone_id") or None
+    duty_start = duty_end = None
+    if "duty_start" in data or "duty_end" in data:
+        existing = guard.profile
+        duty_start, duty_end, duty_error = _duty_window(
+            {
+                "duty_start": data.get("duty_start")
+                or (existing.duty_start if existing else None),
+                "duty_end": data.get("duty_end")
+                or (existing.duty_end if existing else None),
+            }
+        )
+        if duty_error:
+            return jsonify({"error": duty_error}), 400
     if data.get("password"):
         policy_error = password_policy_error(data["password"])
         if policy_error:
             return jsonify({"error": policy_error}), 400
         guard.set_password(data["password"])
     _apply_guard_fields(guard, data)
+    if duty_start:
+        guard.profile.duty_start = duty_start
+        guard.profile.duty_end = duty_end
     record_audit("GUARD_UPDATED", "user", guard.id, {"fields": list(data)}, user=actor)
     db.session.commit()
     return jsonify({"guard": guard.to_dict(include_sensitive=actor.role in FULL_CNIC_ROLES)}), 200

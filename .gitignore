@@ -35,3 +35,6 @@ mobile-client/**/build/
 # OS
 Thumbs.db
 .DS_Store
+
+# AI memory / session files — never commit
+.workbuddy-ai/

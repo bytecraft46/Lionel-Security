@@ -22,6 +22,8 @@ import BroadcastCenter from './BroadcastCenter';
 import ArmouryPanel from './ArmouryPanel';
 import IncidentPanel from './IncidentPanel';
 import ZonesSitesPanel from '../shared/ZonesSitesPanel';
+import CheckInOutPanel from '../shared/CheckInOutPanel';
+import OverdueCheckInAlerts from '../shared/OverdueCheckInAlerts';
 
 export default function OpsDashboard({ tab }) {
   const [overview, setOverview] = useState(null);
@@ -178,6 +180,8 @@ export default function OpsDashboard({ tab }) {
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
+      <OverdueCheckInAlerts />
+
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
         <Kpi label="Registered guards" value={kpis.total_guards ?? '—'} />
         <Kpi label="Guard on duty" value={kpis.on_duty ?? '—'} tone="green" />
@@ -317,13 +321,23 @@ export default function OpsDashboard({ tab }) {
         </>
       )}
 
+      {tab === 'checkins' && (
+        <CheckInOutPanel role="OPS_MANAGER" zones={zones} locations={locations} />
+      )}
+
       {tab === 'zones' && (
         <ZonesSitesPanel zones={zones} locations={locations} onChanged={load} />
       )}
 
       {tab === 'weapons' && (
         <Panel title="Armoury register" subtitle="Issue, verify and reconcile weapons">
-          <ArmouryPanel weapons={weapons} guards={guards} locations={locations} onChanged={load} />
+          <ArmouryPanel
+            weapons={weapons}
+            guards={guards}
+            locations={locations}
+            zones={zones}
+            onChanged={load}
+          />
         </Panel>
       )}
 

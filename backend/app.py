@@ -22,6 +22,33 @@ def _add_missing_zone_columns():
     if "areas" not in columns:
         db.session.execute(text("ALTER TABLE zones ADD COLUMN areas TEXT"))
         db.session.commit()
+    if "posts" in inspector.get_table_names():
+        post_columns = {column["name"] for column in inspector.get_columns("posts")}
+        if "area" not in post_columns:
+            db.session.execute(text("ALTER TABLE posts ADD COLUMN area VARCHAR(120)"))
+            db.session.commit()
+    if "guard_profiles" in inspector.get_table_names():
+        profile_columns = {
+            column["name"] for column in inspector.get_columns("guard_profiles")
+        }
+        for name in ("duty_start", "duty_end"):
+            if name not in profile_columns:
+                db.session.execute(
+                    text(f"ALTER TABLE guard_profiles ADD COLUMN {name} VARCHAR(5)")
+                )
+        db.session.commit()
+    if "weapons" in inspector.get_table_names():
+        weapon_columns = {column["name"] for column in inspector.get_columns("weapons")}
+        for name, ddl in (
+            ("alloc_location", "VARCHAR(120)"),
+            ("alloc_area", "VARCHAR(120)"),
+            ("alloc_lat", "FLOAT"),
+            ("alloc_lng", "FLOAT"),
+            ("alloc_client", "VARCHAR(120)"),
+        ):
+            if name not in weapon_columns:
+                db.session.execute(text(f"ALTER TABLE weapons ADD COLUMN {name} {ddl}"))
+        db.session.commit()
 
 
 def create_app(test_config=None):

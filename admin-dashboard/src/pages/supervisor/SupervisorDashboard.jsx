@@ -21,6 +21,8 @@ import RosterDrawer from '../shared/RosterDrawer';
 import TeamPanel from '../shared/TeamPanel';
 import IncidentPanel from '../ops/IncidentPanel';
 import ArmouryPanel from '../ops/ArmouryPanel';
+import CheckInOutPanel from '../shared/CheckInOutPanel';
+import OverdueCheckInAlerts from '../shared/OverdueCheckInAlerts';
 
 const INCIDENT_TYPES = [
   'THEFT',
@@ -209,6 +211,8 @@ export default function SupervisorDashboard({ tab, user }) {
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
+      <OverdueCheckInAlerts />
+
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
         <Kpi label="My locations" value={kpis.total_locations ?? '—'} />
         <Kpi label="Guards in zone" value={kpis.total_guards ?? '—'} />
@@ -264,6 +268,10 @@ export default function SupervisorDashboard({ tab, user }) {
             </Panel>
           )}
         </div>
+      )}
+
+      {tab === 'checkins' && (
+        <CheckInOutPanel role="SUPERVISOR" zones={overview?.zones || []} locations={locations} />
       )}
 
       {tab === 'alerts' && (
@@ -544,6 +552,7 @@ export default function SupervisorDashboard({ tab, user }) {
             locations={locations}
             onChanged={load}
             canIssue={false}
+            canRegister={false}
           />
         </Panel>
       )}

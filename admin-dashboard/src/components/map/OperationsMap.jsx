@@ -22,8 +22,9 @@ export default function OperationsMap({ locations = [], selectedId, onSelect, cl
     <div className={`w-full overflow-hidden rounded-xl border border-line ${className}`}>
       <MapContainer center={center} zoom={11} scrollWheelZoom className="h-full w-full">
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          url="https://tile.openstreetmap.de/{z}/{x}/{y}.png"
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          maxZoom={18}
         />
         <MapResizer />
         <FitSites locations={locations} />

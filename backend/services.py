@@ -93,6 +93,102 @@ def on_duty_guard_ids(day: date, logs=None):
     }
 
 
+CHECKIN_GRACE_MINUTES = 5
+
+
+def parse_duty_clock(value):
+    """Parse a stored local HH:MM duty time into a time object."""
+    try:
+        hour, minute = str(value or "").split(":")
+        return time(int(hour), int(minute))
+    except (TypeError, ValueError):
+        return None
+
+
+def duty_window(duty_start, duty_end, moment):
+    """Return the (start, end) datetimes of the duty covering `moment`."""
+    start_clock = parse_duty_clock(duty_start)
+    end_clock = parse_duty_clock(duty_end)
+    if not start_clock or not end_clock:
+        return None, None
+    start = datetime.combine(moment.date(), start_clock)
+    end = datetime.combine(moment.date(), end_clock)
+    if end <= start:
+        # Overnight duty, e.g. 20:00 -> 08:00.
+        end += timedelta(days=1)
+        if moment < end and moment.time() < end_clock:
+            start -= timedelta(days=1)
+            end -= timedelta(days=1)
+    return start, end
+
+
+def overdue_checkins(user: User, now: datetime = None):
+    """Guards past their duty start by the grace period with no check-in.
+
+    Duty times are stored as local HH:MM while attendance timestamps are naive
+    UTC, so the shift window is converted through the server's local offset.
+    """
+    local_now = now or datetime.now()
+    utc_now = datetime.utcnow()
+    offset = local_now - utc_now
+    leaves = leave_map(local_now.date())
+    alerts = []
+    for guard in scoped_guards(user):
+        profile = guard.profile
+        if not profile or guard.employment_status == "TERMINATED":
+            continue
+        if guard.id in leaves:
+            continue
+        post_id = guard.assigned_post_id or profile.assigned_post_id
+        if not post_id:
+            continue  # relief guards have no fixed site to check in at
+        start_local, end_local = duty_window(
+            profile.duty_start, profile.duty_end, local_now
+        )
+        if not start_local:
+            continue
+        start_utc = start_local - offset
+        end_utc = end_local - offset
+        if utc_now < start_utc + timedelta(minutes=CHECKIN_GRACE_MINUTES):
+            continue
+        if utc_now > end_utc:
+            continue
+        checked_in = AttendanceLog.query.filter(
+            AttendanceLog.guard_id == guard.id,
+            AttendanceLog.punch_type == "IN",
+            AttendanceLog.punch_timestamp >= start_utc - timedelta(hours=2),
+            AttendanceLog.punch_timestamp <= utc_now,
+        ).first()
+        if checked_in:
+            continue
+        post = db.session.get(Post, post_id)
+        zone = post.zone if post else guard.zone
+        alerts.append(
+            {
+                "guard_id": guard.id,
+                "guard_name": guard.full_name,
+                "employee_id": guard.employee_id,
+                "phone_number": guard.phone_number,
+                "zone_id": zone.id if zone else None,
+                "zone_name": zone.name if zone else None,
+                "post_id": post.id if post else None,
+                "post_name": post.name if post else None,
+                "area": post.area if post else None,
+                "client_name": post.client_name if post else None,
+                "duty_start": profile.duty_start,
+                "duty_end": profile.duty_end,
+                "shift_start": start_utc.isoformat(),
+                "shift_end": end_utc.isoformat(),
+                "minutes_late": max(
+                    0, int((utc_now - start_utc).total_seconds() // 60)
+                ),
+                "grace_minutes": CHECKIN_GRACE_MINUTES,
+            }
+        )
+    alerts.sort(key=lambda row: row["minutes_late"], reverse=True)
+    return alerts
+
+
 def leave_map(day: date):
     rows = LeaveRequest.query.filter(
         LeaveRequest.status == "APPROVED",

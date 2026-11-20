@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { Pencil, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
 import { api } from '../../lib/http';
-import { Badge, Button, EmptyState, ErrorBanner, Field, Panel, RagDot, StatusBadge } from '../../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, Field, Modal, Panel, RagDot, StatusBadge } from '../../components/ui';
 
 const EMPTY_FORM = { name: '', code: '', areas: [], supervisor_id: '' };
 const EMPTY_SITE_FORM = {
   name: '',
   client_name: '',
+  area: '',
   required_strength: '1',
   zone_id: '',
   lat: '',
@@ -35,8 +36,13 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
   const [saving, setSaving] = useState(false);
   const [busyZone, setBusyZone] = useState(null);
   const [siteForm, setSiteForm] = useState(EMPTY_SITE_FORM);
+  const siteAreas = zones.find((zone) => zone.id === siteForm.zone_id)?.areas || [];
   const [showSiteForm, setShowSiteForm] = useState(false);
   const [siteSaving, setSiteSaving] = useState(false);
+  const [guardSite, setGuardSite] = useState(null);
+  const [guardList, setGuardList] = useState([]);
+  const [guardBusyId, setGuardBusyId] = useState(null);
+  const [guardSearch, setGuardSearch] = useState('');
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
 
@@ -154,6 +160,7 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
           zone_id: siteForm.zone_id,
           name: siteForm.name,
           client_name: siteForm.client_name,
+          area: siteForm.area,
           required_strength: Number(siteForm.required_strength) || 0,
           lat: siteForm.lat === '' ? null : Number(siteForm.lat),
           lng: siteForm.lng === '' ? null : Number(siteForm.lng),
@@ -167,6 +174,44 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
       setError(err.message);
     } finally {
       setSiteSaving(false);
+    }
+  }
+
+  async function openSiteGuards(site) {
+    setGuardSite(site);
+    setGuardSearch('');
+    setError(null);
+    try {
+      const data = await api('/api/guards');
+      setGuardList(data.guards || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function setGuardSiteAssignment(guard, site) {
+    setGuardBusyId(guard.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await api(`/api/guards/${guard.id}`, {
+        method: 'PUT',
+        body: site
+          ? { assigned_post_id: site.id, zone_id: site.zone_id }
+          : { assigned_post_id: null },
+      });
+      const data = await api('/api/guards');
+      setGuardList(data.guards || []);
+      setNotice(
+        site
+          ? `${guard.full_name} added to ${site.name}.`
+          : `${guard.full_name} moved to the relief pool.`,
+      );
+      onChanged?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setGuardBusyId(null);
     }
   }
 
@@ -474,12 +519,35 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
                   className="input"
                   required
                   value={siteForm.zone_id}
-                  onChange={(event) => updateSite('zone_id', event.target.value)}
+                  onChange={(event) => {
+                    setSiteForm((current) => ({
+                      ...current,
+                      zone_id: event.target.value,
+                      area: '',
+                    }));
+                  }}
                 >
                   <option value="">Select a zone</option>
                   {zones.map((zone) => (
                     <option key={zone.id} value={zone.id}>
                       {zone.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Area" hint={siteForm.zone_id ? 'Areas of the selected zone' : 'Select a zone first'}>
+                <select
+                  className="input"
+                  value={siteForm.area}
+                  disabled={!siteForm.zone_id}
+                  onChange={(event) => updateSite('area', event.target.value)}
+                >
+                  <option value="">
+                    {siteAreas.length ? 'Select an area' : 'No areas in this zone'}
+                  </option>
+                  {siteAreas.map((area) => (
+                    <option key={area} value={area}>
+                      {area}
                     </option>
                   ))}
                 </select>
@@ -553,7 +621,12 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
             <tbody>
               {locations.map((site) => (
                 <tr key={site.id}>
-                  <td className="font-semibold">{site.name}</td>
+                  <td>
+                    <span className="font-semibold">{site.name}</span>
+                    {site.area && (
+                      <span className="block text-[10px] text-muted">{site.area}</span>
+                    )}
+                  </td>
                   <td className="text-muted">{site.client_name || '—'}</td>
                   <td>{site.zone_name || '—'}</td>
                   <td>{site.supervisor_name || '—'}</td>
@@ -564,7 +637,15 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
                     <StatusBadge status={site.computed_status} />
                   </td>
                   <td>
-                    <div className="flex justify-end">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Add guards to this site"
+                        onClick={() => openSiteGuards(site)}
+                      >
+                        <Users size={12} /> Guards
+                      </Button>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -583,6 +664,113 @@ export default function ZonesSitesPanel({ zones = [], locations = [], onChanged 
         </div>
         )}
       </Panel>
+
+      <Modal
+        open={Boolean(guardSite)}
+        onClose={() => setGuardSite(null)}
+        title={`Guards — ${guardSite?.name || ''}`}
+        subtitle={
+          guardSite
+            ? `${guardSite.zone_name || 'Zone'}${guardSite.area ? ` · ${guardSite.area}` : ''} · add guards of this zone to the site`
+            : ''
+        }
+        footer={
+          <Button variant="ghost" onClick={() => setGuardSite(null)}>
+            Close
+          </Button>
+        }
+      >
+        <div className="space-y-3">
+          <ErrorBanner message={error} onDismiss={() => setError(null)} />
+          <input
+            className="input"
+            placeholder="Search guards by name or employee ID…"
+            value={guardSearch}
+            onChange={(event) => setGuardSearch(event.target.value)}
+          />
+          {(() => {
+            const term = guardSearch.trim().toLowerCase();
+            const rows = guardList
+              .filter(
+                (guard) =>
+                  !guardSite?.zone_id ||
+                  !guard.zone_id ||
+                  guard.zone_id === guardSite.zone_id,
+              )
+              .filter(
+                (guard) =>
+                  !term ||
+                  (guard.full_name || '').toLowerCase().includes(term) ||
+                  (guard.employee_id || '').toLowerCase().includes(term),
+              )
+              .sort((a, b) => {
+                const aHere = a.assigned_post_id === guardSite?.id ? 0 : 1;
+                const bHere = b.assigned_post_id === guardSite?.id ? 0 : 1;
+                return aHere - bHere || (a.full_name || '').localeCompare(b.full_name || '');
+              });
+            if (!rows.length) {
+              return <EmptyState title="No guards match" hint="Try another name or employee ID." />;
+            }
+            return (
+              <div className="max-h-80 overflow-auto rounded-xl border border-line">
+                <table className="table-base">
+                  <thead>
+                    <tr>
+                      <th>Guard</th>
+                      <th>Employee ID</th>
+                      <th>Site</th>
+                      <th className="text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.slice(0, 200).map((guard) => {
+                      const onThisSite = guard.assigned_post_id === guardSite?.id;
+                      return (
+                        <tr key={guard.id}>
+                          <td className="font-semibold">{guard.full_name}</td>
+                          <td className="font-mono text-[10px] text-muted">
+                            {guard.employee_id || '—'}
+                          </td>
+                          <td>
+                            {onThisSite ? (
+                              <Badge tone="green">This site</Badge>
+                            ) : (
+                              guard.assigned_post_name || 'Relief pool'
+                            )}
+                          </td>
+                          <td>
+                            <div className="flex justify-end">
+                              {onThisSite ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={guardBusyId === guard.id}
+                                  onClick={() => setGuardSiteAssignment(guard, null)}
+                                >
+                                  {guardBusyId === guard.id ? 'Removing…' : 'Remove'}
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={guardBusyId === guard.id}
+                                  onClick={() => setGuardSiteAssignment(guard, guardSite)}
+                                >
+                                  {guardBusyId === guard.id ? 'Adding…' : 'Add guard'}
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </div>
+      </Modal>
     </div>
   );
 }

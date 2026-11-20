@@ -22,7 +22,15 @@ from security import (
     record_audit,
     scoped_zone_ids,
 )
-from services import day_end, day_start, todays_logs
+from services import (
+    CHECKIN_GRACE_MINUTES,
+    day_end,
+    day_start,
+    overdue_checkins,
+    scoped_guards,
+    scoped_post_query,
+    todays_logs,
+)
 from utils.geo import geofence_check, qr_token_valid
 from utils.realtime import emit_operational
 
@@ -315,6 +323,165 @@ def attendance_stream():
     return jsonify({"attendance": [row.to_dict() for row in rows]}), 200
 
 
+@operations_bp.route("/attendance/overdue", methods=["GET"])
+@jwt_required(roles=STAFF_ROLES)
+def overdue_attendance():
+    """Guards who have not checked in within the duty-start grace period.
+
+    CEO and Operations Manager see every guard; a supervisor sees only guards
+    attached to sites inside their own zone(s).
+    """
+    user = current_user()
+    alerts = overdue_checkins(user)
+    return (
+        jsonify(
+            {
+                "alerts": alerts,
+                "count": len(alerts),
+                "grace_minutes": CHECKIN_GRACE_MINUTES,
+                "generated_at": datetime.utcnow().isoformat(),
+            }
+        ),
+        200,
+    )
+
+
+@operations_bp.route("/attendance/register", methods=["GET"])
+@jwt_required(roles=STAFF_ROLES)
+def attendance_register():
+    """Per-guard check-in / check-out register for one day.
+
+    The CEO and Operations Manager see every zone; a supervisor only sees the
+    guards attached to sites inside their own zone(s).
+    """
+    user = current_user()
+    day = _parse_date(request.args.get("date")) or date.today()
+    zone_filter = (request.args.get("zone_id") or "").strip()
+    post_filter = (request.args.get("post_id") or "").strip()
+
+    posts = {post.id: post for post in scoped_post_query(user).all()}
+    scoped = []
+    for guard in scoped_guards(user):
+        if guard.employment_status == "TERMINATED":
+            continue
+        post_id = guard.assigned_post_id or (
+            guard.profile.assigned_post_id if guard.profile else None
+        )
+        post = posts.get(post_id) if post_id else None
+        zone_id = post.zone_id if post else guard.zone_id
+        if zone_filter and zone_id != zone_filter:
+            continue
+        if post_filter and (post.id if post else None) != post_filter:
+            continue
+        scoped.append((guard, post))
+
+    guard_ids = [guard.id for guard, _ in scoped]
+    logs = []
+    if guard_ids:
+        logs = (
+            AttendanceLog.query.filter(
+                AttendanceLog.guard_id.in_(guard_ids),
+                AttendanceLog.punch_timestamp >= day_start(day),
+                AttendanceLog.punch_timestamp <= day_end(day),
+            )
+            .order_by(AttendanceLog.punch_timestamp.asc())
+            .all()
+        )
+
+    grouped = {}
+    for log in logs:
+        grouped.setdefault(log.guard_id, []).append(log)
+
+    def punch_payload(log):
+        log_post = posts.get(log.post_id)
+        return {
+            "id": log.id,
+            "time": log.punch_timestamp.isoformat() if log.punch_timestamp else None,
+            "status": log.status,
+            "source": log.verification_source,
+            "distance_meters": round(log.distance_meters, 1)
+            if log.distance_meters is not None
+            else None,
+            "is_geofence_valid": bool(log.is_geofence_valid),
+            "is_mock_location": bool(log.is_mock_location),
+            "notes": log.notes,
+            "supervisor_name": log.supervisor.full_name if log.supervisor else None,
+            "post_name": log_post.name if log_post else None,
+        }
+
+    rows = []
+    for guard, post in scoped:
+        guard_logs = grouped.get(guard.id, [])
+        ins = [log for log in guard_logs if log.punch_type == "IN"]
+        outs = [log for log in guard_logs if log.punch_type == "OUT"]
+        check_in = ins[0] if ins else None
+        check_out = outs[-1] if outs else None
+        last = guard_logs[-1] if guard_logs else None
+
+        if last is None:
+            status = "NOT_CHECKED_IN"
+        elif last.punch_type == "IN":
+            status = "ON_DUTY"
+        else:
+            status = "CHECKED_OUT"
+
+        hours = None
+        if check_in and check_out and check_out.punch_timestamp > check_in.punch_timestamp:
+            hours = round(
+                (
+                    check_out.punch_timestamp - check_in.punch_timestamp
+                ).total_seconds()
+                / 3600.0,
+                2,
+            )
+
+        zone = post.zone if post else guard.zone
+        rows.append(
+            {
+                "guard_id": guard.id,
+                "guard_name": guard.full_name,
+                "employee_id": guard.employee_id,
+                "phone_number": guard.phone_number,
+                "rank": guard.profile.rank if guard.profile else None,
+                "zone_id": zone.id if zone else None,
+                "zone_name": zone.name if zone else None,
+                "post_id": post.id if post else None,
+                "post_name": post.name if post else None,
+                "area": post.area if post else None,
+                "client_name": post.client_name if post else None,
+                "check_in": punch_payload(check_in) if check_in else None,
+                "check_out": punch_payload(check_out) if check_out else None,
+                "punch_count": len(guard_logs),
+                "last_event": last.punch_timestamp.isoformat() if last else None,
+                "status": status,
+                "hours": hours,
+                "flagged": any(
+                    log.status == "FLAGGED_ANOMALY" for log in guard_logs
+                ),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            (row["zone_name"] or "").lower(),
+            (row["post_name"] or "").lower(),
+            (row["guard_name"] or "").lower(),
+        )
+    )
+    summary = {
+        "total": len(rows),
+        "on_duty": len([row for row in rows if row["status"] == "ON_DUTY"]),
+        "checked_out": len(
+            [row for row in rows if row["status"] == "CHECKED_OUT"]
+        ),
+        "not_checked_in": len(
+            [row for row in rows if row["status"] == "NOT_CHECKED_IN"]
+        ),
+        "flagged": len([row for row in rows if row["flagged"]]),
+    }
+    return jsonify({"date": day.isoformat(), "summary": summary, "rows": rows}), 200
+
+
 @operations_bp.route("/attendance/<attendance_id>/verify", methods=["POST"])
 @jwt_required(roles=("OPS_MANAGER", "SUPERVISOR"))
 def verify_attendance(attendance_id):
@@ -414,15 +581,24 @@ def list_weapons():
 def create_weapon():
     actor = current_user()
     data = request.get_json(silent=True) or {}
-    if not data.get("serial_number") or not data.get("weapon_type"):
-        return jsonify({"error": "serial_number and weapon_type are required."}), 400
-    if Weapon.query.filter_by(serial_number=data["serial_number"]).first():
-        return jsonify({"error": "Serial number already registered."}), 409
+    fields = {
+        "Arm name": data.get("weapon_type"),
+        "Make and model": data.get("make_model"),
+        "Registration number": data.get("serial_number"),
+        "Licence number": data.get("licence_number"),
+    }
+    missing = [label for label, value in fields.items() if not str(value or "").strip()]
+    if missing:
+        subject = ", ".join(missing)
+        return jsonify({"error": f"{subject} {'is' if len(missing) == 1 else 'are'} required."}), 400
+    serial = data["serial_number"].strip()
+    if Weapon.query.filter_by(serial_number=serial).first():
+        return jsonify({"error": "Registration number already registered."}), 409
     weapon = Weapon(
-        weapon_type=data["weapon_type"].upper(),
-        make_model=data.get("make_model"),
-        serial_number=data["serial_number"].strip(),
-        licence_number=data.get("licence_number"),
+        weapon_type=data["weapon_type"].strip().upper(),
+        make_model=data["make_model"].strip(),
+        serial_number=serial,
+        licence_number=data["licence_number"].strip(),
         licence_expiry_date=_parse_date(data.get("licence_expiry_date")),
         ammunition_count=int(data.get("ammunition_count") or 0),
         condition=(data.get("condition") or "SERVICEABLE").upper(),
@@ -446,7 +622,8 @@ def issue_weapon(weapon_id):
     data = request.get_json(silent=True) or {}
     guard_id = data.get("guard_id") or None
     post_id = data.get("post_id") or None
-    if not guard_id and not post_id:
+    location_name = str(data.get("location") or "").strip() or None
+    if not guard_id and not post_id and not location_name:
         return jsonify({"error": "Select a guard or a location to allot this weapon."}), 400
 
     guard = None
@@ -466,8 +643,37 @@ def issue_weapon(weapon_id):
     if weapon.armoury_status == "ISSUED":
         return jsonify({"error": "Weapon is already issued."}), 409
 
+    alloc = {
+        "alloc_location": None,
+        "alloc_area": None,
+        "alloc_lat": None,
+        "alloc_lng": None,
+        "alloc_client": None,
+    }
+    if not guard and not post:
+        area = str(data.get("area") or "").strip() or location_name
+        client_name = str(data.get("client_name") or "").strip()
+        try:
+            lat = float(data.get("lat")) if data.get("lat") not in (None, "") else None
+            lng = float(data.get("lng")) if data.get("lng") not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "Latitude and longitude must be numbers."}), 400
+        if lat is None or lng is None:
+            return jsonify({"error": "Latitude and longitude are required for a location allocation."}), 400
+        if not client_name:
+            return jsonify({"error": "Client is required for a location allocation."}), 400
+        alloc = {
+            "alloc_location": location_name,
+            "alloc_area": area,
+            "alloc_lat": lat,
+            "alloc_lng": lng,
+            "alloc_client": client_name,
+        }
+
     weapon.issued_to_guard_id = guard.id if guard else None
     weapon.assigned_post_id = post.id if post else None
+    for key, value in alloc.items():
+        setattr(weapon, key, value)
     weapon.issued_at = datetime.utcnow()
     weapon.armoury_status = "ISSUED"
     db.session.add(
@@ -484,7 +690,13 @@ def issue_weapon(weapon_id):
         "WEAPON_ISSUED",
         "weapon",
         weapon.id,
-        {"guard_id": guard.id if guard else None, "post_id": post.id if post else None},
+        {
+            "guard_id": guard.id if guard else None,
+            "post_id": post.id if post else None,
+            "location": alloc.get("alloc_location"),
+            "area": alloc.get("alloc_area"),
+            "client": alloc.get("alloc_client"),
+        },
         user=actor,
     )
     db.session.commit()
@@ -523,6 +735,11 @@ def return_weapon(weapon_id):
     assigned_post = weapon.assigned_post_id
     weapon.issued_to_guard_id = None
     weapon.assigned_post_id = None
+    weapon.alloc_location = None
+    weapon.alloc_area = None
+    weapon.alloc_lat = None
+    weapon.alloc_lng = None
+    weapon.alloc_client = None
     weapon.issued_at = None
     record_audit("WEAPON_RETURNED", "weapon", weapon.id, {"condition": weapon.condition}, user=actor)
     db.session.commit()

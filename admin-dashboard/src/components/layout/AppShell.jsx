@@ -39,7 +39,7 @@ export default function AppShell({ user, onSignOut, children }) {
           <img
             src="/brand/lionel-crest.webp"
             alt="Lionel Security crest"
-            className="h-10 w-10 flex-shrink-0 object-contain drop-shadow-sm"
+            className="h-11 w-11 flex-shrink-0 object-contain drop-shadow-sm"
           />
           <div>
             <h1 className="text-sm font-black uppercase tracking-[0.16em] text-ink">
