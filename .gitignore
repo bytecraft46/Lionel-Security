@@ -1,0 +1,37 @@
+# Secrets — never commit
+.env
+backend/.env
+CREDENTIALS.md
+*.pem
+*.key
+
+# Databases
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+
+# Uploaded evidence / documents
+backend/uploads/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Node / build output
+node_modules/
+admin-dashboard/dist/
+dist/
+*.apk
+*.log
+
+# Flutter / mobile build output
+mobile-client/build/
+mobile-client/**/.dart_tool/
+mobile-client/**/.flutter-plugins*
+mobile-client/**/build/
+
+# OS
+Thumbs.db
+.DS_Store
