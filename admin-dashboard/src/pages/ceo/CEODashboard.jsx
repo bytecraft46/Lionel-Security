@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ChevronDown, Download, RefreshCw, ShieldAlert } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, RefreshCw, ShieldAlert } from 'lucide-react';
 import { api, downloadFile } from '../../lib/http';
+import { useSocketEvent } from '../../lib/socket';
 import { fmtDate, toneForStatus } from '../../lib/format';
 import {
   Badge,
@@ -14,12 +15,14 @@ import {
   Spinner,
   StatusBadge,
 } from '../../components/ui';
+import AttendanceDetailModal from '../../components/ui/AttendanceDetailModal';
 import RosterDrawer from '../shared/RosterDrawer';
 import GuardZoneMap from '../../components/map/GuardZoneMap';
 import IncidentPanel from '../ops/IncidentPanel';
 import ArmouryPanel from '../ops/ArmouryPanel';
 import TeamPanel from '../shared/TeamPanel';
 import AuditLogPanel from '../shared/AuditLogPanel';
+import RiskCompliancePanel from '../shared/RiskCompliancePanel';
 import CheckInOutPanel from '../shared/CheckInOutPanel';
 import OverdueCheckInAlerts from '../shared/OverdueCheckInAlerts';
 
@@ -33,6 +36,9 @@ export default function CEODashboard({ tab }) {
   const [error, setError] = useState(null);
   const [rosterSite, setRosterSite] = useState(null);
   const [showLeave, setShowLeave] = useState(false);
+  const [modalType, setModalType] = useState(null);
+  const [toast, setToast] = useState(null);
+  const refreshTimer = useRef(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -60,6 +66,39 @@ export default function CEODashboard({ tab }) {
     load();
   }, [load]);
 
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      load();
+    }, 400);
+  }, [load]);
+
+  useEffect(
+    () => () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = setTimeout(() => setToast(null), 8000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  useSocketEvent('INCIDENT_BROADCAST', (incident) => {
+    const alert = incident.alert || {};
+    const nearby = alert.nearby_guard_count ?? 0;
+    const radius = alert.radius_km ?? 10;
+    setToast(
+      `🚨 ${(incident.incident_type || 'ALERT').replaceAll('_', ' ')} at ${
+        incident.post_name || 'deployed site'
+      } — ${nearby} guard${nearby === 1 ? '' : 's'} within ${radius} km alerted`,
+    );
+    scheduleRefresh();
+  });
+
   const kpis = overview?.kpis || {};
   const locations = overview?.locations || [];
   const zones = overview?.zones || [];
@@ -80,34 +119,35 @@ export default function CEODashboard({ tab }) {
   );
 
   const activeEmergencies = incidents.filter((incident) => incident.status !== 'RESOLVED');
-  const complaints = incidents.filter((incident) => incident.incident_type === 'CLIENT_COMPLAINT');
   const unacknowledged = broadcasts.filter(
     (broadcast) => broadcast.priority === 'CRITICAL' && broadcast.not_received_count > 0,
   );
 
   if (loading) {
     return (
-      <div className="p-6">
-        <Spinner label="Loading executive posture…" />
+      <div className="p-8">
+        <Spinner label="Loading operational posture…" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 p-4 lg:p-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6">
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
+
+      {(tab === 'posture' || !tab) && (
+        <>
+      {/* Top Banner / Actions Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-base font-black uppercase tracking-[0.16em] text-ink">
-            Executive Posture & Risk Command
-          </h2>
-          <p className="text-[11px] text-muted">
-            {fmtDate(overview?.date)} · 30–60 second decision view across {' '}
-            {kpis.total_locations ?? 0} deployment locations
+          <h2 className="text-lg font-bold text-slate-800">Operational Overview</h2>
+          <p className="text-xs text-muted">
+            {fmtDate(overview?.date)} · Status across {kpis.total_locations ?? 0} active deployment locations
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={load}>
-            <RefreshCw size={12} /> Refresh
+        <div className="flex items-center gap-2.5">
+          <Button variant="ghost" onClick={load} className="border border-line bg-white hover:bg-slate-50">
+            <RefreshCw size={13} /> Refresh
           </Button>
           <Button
             variant="primary"
@@ -118,62 +158,82 @@ export default function CEODashboard({ tab }) {
               ).catch((err) => setError(err.message))
             }
           >
-            <Download size={12} /> Export daily SITREP
+            <Download size={13} /> Export Daily SITREP
           </Button>
         </div>
       </div>
 
-      <ErrorBanner message={error} onDismiss={() => setError(null)} />
-
       <OverdueCheckInAlerts />
 
       {(kpis.active_emergencies > 0 || kpis.vacant_posts > 0) && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5">
-          <ShieldAlert size={16} className="text-rose-500" />
-          <p className="text-[11px] font-bold uppercase tracking-wide text-rose-700">
-            Management attention: {kpis.active_emergencies || 0} active emergenc
-            {(kpis.active_emergencies || 0) === 1 ? 'y' : 'ies'} · {kpis.vacant_posts || 0} vacant post
-            {(kpis.vacant_posts || 0) === 1 ? '' : 's'}
+        <div className="flex items-center gap-3 rounded-2xl border border-rose-200 bg-[#FDF0ED] px-4 py-3 text-rose-800">
+          <ShieldAlert size={18} className="text-rose-600 flex-shrink-0" />
+          <p className="text-xs font-semibold">
+            Action Needed: {kpis.active_emergencies || 0} active incident{(kpis.active_emergencies || 0) === 1 ? '' : 's'} · {kpis.vacant_posts || 0} vacant post{(kpis.vacant_posts || 0) === 1 ? '' : 's'} across Karachi sectors
           </p>
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
-        <Kpi label="Total guards" value={kpis.total_guards ?? '—'} hint="Registered strength" />
-        <Kpi label="Deployment sites" value={kpis.total_locations ?? '—'} hint="Active locations" />
-        <Kpi label="Guards on duty" value={kpis.on_duty ?? '—'} tone="green" />
-        <Kpi label="Absent" value={kpis.absent ?? '—'} tone={(kpis.absent || 0) > 0 ? 'yellow' : 'neutral'} />
-        <Kpi
-          label="On leave"
-          value={kpis.on_leave ?? '—'}
-          hint="Click to list names"
-          onClick={() => setShowLeave((value) => !value)}
-        />
-        <Kpi label="On rest" value={kpis.on_rest ?? '—'} />
-        <Kpi label="Vacant posts" value={kpis.vacant_posts ?? '—'} tone={(kpis.vacant_posts || 0) > 0 ? 'red' : 'green'} />
-        <Kpi label="Weapons issued" value={kpis.weapons_issued ?? '—'} />
-        <Kpi label="Weapons in armoury" value={kpis.weapons_in_armoury ?? '—'} />
-        <Kpi
-          label="Active emergencies"
-          value={kpis.active_emergencies ?? '—'}
-          tone={(kpis.active_emergencies || 0) > 0 ? 'red' : 'green'}
-        />
-        <Kpi label="Zones in red" value={kpis.zones_in_red ?? '—'} tone={(kpis.zones_in_red || 0) > 0 ? 'red' : 'green'} />
-        <Kpi
-          label="Unacked critical"
-          value={kpis.unacknowledged_critical ?? '—'}
-          tone={(kpis.unacknowledged_critical || 0) > 0 ? 'yellow' : 'green'}
-        />
+      {/* Attendance / Strength Summary Header matching user's screenshot */}
+      <div>
+        <div className="flex items-center justify-between pb-3">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Attendance Summary</h3>
+          <span className="text-xs font-medium text-muted">Active Month · 2026</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+          <Kpi
+            label="Registered Strength"
+            value={kpis.total_guards ?? '—'}
+            tone="green"
+            onClick={() => setModalType('SHIFTS')}
+          />
+          <Kpi
+            label="Guards On Duty"
+            value={kpis.on_duty ?? '0'}
+            tone="green"
+            onClick={() => setModalType('ON_DUTY')}
+          />
+          <Kpi
+            label="Vacant Posts"
+            value={kpis.vacant_posts ?? '0'}
+            tone={kpis.vacant_posts > 0 ? "red" : "green"}
+            onClick={() => setModalType('VACANT')}
+          />
+          <Kpi
+            label="Absent"
+            value={kpis.absent ?? '0'}
+            tone={kpis.absent > 0 ? "yellow" : "neutral"}
+            onClick={() => setModalType('ABSENT')}
+          />
+          <Kpi
+            label="On Leave"
+            value={kpis.on_leave ?? '0'}
+            tone="info"
+            onClick={() => setModalType('LEAVE')}
+          />
+          <Kpi
+            label="Weapons Issued"
+            value={kpis.weapons_issued ?? '0'}
+            tone="neutral"
+            onClick={() => setModalType('WEAPONS')}
+          />
+          <Kpi
+            label="Emergencies"
+            value={kpis.active_emergencies ?? '0'}
+            tone={kpis.active_emergencies > 0 ? "red" : "neutral"}
+            onClick={() => setModalType('EMERGENCIES')}
+          />
+        </div>
       </div>
 
       {showLeave && (
-        <Panel title="Guards on leave today" bodyClassName="p-3">
+        <Panel title="Guards on approved leave today">
           {leaveRows.length === 0 ? (
-            <p className="text-[11px] text-muted">No approved leave today.</p>
+            <p className="text-xs text-muted">No approved leave today.</p>
           ) : (
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {leaveRows.map((row) => (
-                <Badge key={row.id} tone={row.leave_type === 'WEEKLY_REST' ? 'info' : 'yellow'}>
+                <Badge key={row.id} tone="info">
                   {row.guard_name} · {row.leave_type.replaceAll('_', ' ')}
                 </Badge>
               ))}
@@ -182,33 +242,38 @@ export default function CEODashboard({ tab }) {
         </Panel>
       )}
 
+        </>
+      )}
+
       {(tab === 'posture' || !tab) && (
         <>
+          {/* Guard Deployment Map */}
           <Panel
-            title="Guard deployment map"
-            subtitle="Guards plotted by zone colour · hover a marker for name, supervisor and location"
+            title="Guard Deployment Map"
+            subtitle="Live locations plotted across Karachi zones"
             actions={<Badge tone="neutral">{guards.length} guards · {zones.length} zones</Badge>}
           >
             <GuardZoneMap guards={guards} locations={locations} zones={zones} />
           </Panel>
 
+          {/* Zone & Location Matrix */}
           <Panel
-            title="Zone & location status matrix"
-            subtitle="Click any location for the read-only deployment roster"
+            title="Zone & Location Status Matrix"
+            subtitle="Select any site for full deployment roster"
             actions={<Badge tone="neutral">{locations.length} sites</Badge>}
           >
-            <div className="space-y-3">
+            <div className="space-y-4">
               {zones.map((zone) => (
-                <div key={zone.id} className="rounded-xl border border-line">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-panelAlt/50 px-3 py-2">
+                <div key={zone.id} className="rounded-2xl border border-line bg-slate-50/40 overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-slate-50/80 px-4 py-3">
                     <div>
-                      <p className="text-[11px] font-bold text-ink">{zone.name}</p>
-                      <p className="text-[10px] text-muted">
-                        {zone.supervisor_name || 'Unassigned'} · {zone.present_count}/{zone.required_strength} deployed
+                      <p className="text-xs font-bold text-slate-800 tracking-wide">{zone.name}</p>
+                      <p className="text-[11px] text-muted">
+                        Supervisor: <span className="font-semibold text-slate-700">{zone.supervisor_name || 'Unassigned'}</span> · {zone.present_count}/{zone.required_strength} on shift · {zone.assigned_guards ?? '—'} assigned
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="w-28">
+                      <div className="w-32">
                         <ProgressBar
                           value={zone.required_strength ? zone.present_count / zone.required_strength : 0}
                           tone={zone.status === 'RED' ? 'red' : zone.status === 'YELLOW' ? 'yellow' : 'green'}
@@ -217,7 +282,7 @@ export default function CEODashboard({ tab }) {
                       <RagDot status={zone.status} />
                     </div>
                   </div>
-                  <div className="grid gap-px bg-line/40 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-3">
                     {locations
                       .filter((site) => site.zone_id === zone.id)
                       .map((site) => (
@@ -225,16 +290,18 @@ export default function CEODashboard({ tab }) {
                           key={site.id}
                           type="button"
                           onClick={() => setRosterSite(site)}
-                          className="flex items-center justify-between gap-2 bg-panel px-3 py-2 text-left hover:bg-panelAlt/70"
+                          className="flex items-center justify-between gap-2 bg-white px-4 py-3 text-left transition-colors hover:bg-slate-50 group"
                         >
                           <span className="min-w-0">
-                            <span className="block truncate text-[11px] font-semibold text-ink">{site.name}</span>
-                            <span className="block truncate text-[10px] text-muted">
+                            <span className="block truncate text-xs font-semibold text-slate-800 group-hover:text-primary transition-colors">
+                              {site.name}
+                            </span>
+                            <span className="block truncate text-[10px] text-muted font-medium">
                               {site.client_name || 'Client site'}
                             </span>
                           </span>
                           <span className="flex flex-shrink-0 items-center gap-2">
-                            <span className="font-mono text-[10px] text-muted">
+                            <span className="font-mono text-xs font-bold text-slate-700">
                               {site.present_count}/{site.required_strength}
                             </span>
                             <RagDot status={site.computed_status} />
@@ -247,15 +314,16 @@ export default function CEODashboard({ tab }) {
             </div>
           </Panel>
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Panel title="Locations requiring management attention" className="lg:col-span-2">
+          {/* Attention & Weapons */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            <Panel title="Locations Requiring Attention" className="lg:col-span-2">
               {attention.length === 0 && <EmptyState title="No attention flags" />}
-              <ul className="divide-y divide-line/60">
+              <ul className="divide-y divide-line">
                 {attention.slice(0, 8).map((item, index) => (
-                  <li key={`${item.kind}-${index}`} className="flex items-start justify-between gap-3 py-2">
+                  <li key={`${item.kind}-${index}`} className="flex items-start justify-between gap-3 py-3">
                     <div className="min-w-0">
-                      <p className="truncate text-[11px] font-semibold text-ink">{item.location_name}</p>
-                      <p className="text-[10px] text-muted">{item.reason}</p>
+                      <p className="truncate text-xs font-semibold text-slate-800">{item.location_name}</p>
+                      <p className="text-[11px] text-muted">{item.reason}</p>
                     </div>
                     <Badge tone={toneForStatus(item.severity)}>{item.kind.replaceAll('_', ' ')}</Badge>
                   </li>
@@ -263,13 +331,13 @@ export default function CEODashboard({ tab }) {
               </ul>
             </Panel>
 
-            <Panel title="Weapons issued by location" subtitle={`${weaponsByLocation && Object.keys(weaponsByLocation).length} locations armed`}>
+            <Panel title="Weapons Issued by Location" subtitle={`${Object.keys(weaponsByLocation).length} sites armed`}>
               {Object.keys(weaponsByLocation).length === 0 && <EmptyState title="No weapons issued" />}
-              <ul className="space-y-1.5">
+              <ul className="space-y-2">
                 {Object.entries(weaponsByLocation).map(([name, count]) => (
-                  <li key={name} className="flex items-center justify-between text-[11px]">
+                  <li key={name} className="flex items-center justify-between text-xs py-1">
                     <span className="truncate text-muted">{name}</span>
-                    <span className="font-mono font-bold text-ink">{count}</span>
+                    <span className="font-mono font-bold text-slate-800">{count}</span>
                   </li>
                 ))}
               </ul>
@@ -282,156 +350,71 @@ export default function CEODashboard({ tab }) {
         <CheckInOutPanel role="CEO" zones={zones} locations={locations} />
       )}
 
-      {(tab === 'zones' || tab === 'risk') && (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Panel
-            className={tab === 'zones' ? 'lg:col-span-3' : 'lg:col-span-2'}
-            title="Deployment register"
-            subtitle="Every active site with verified strength"
-          >
-            <div className="overflow-x-auto rounded-xl border border-line">
-              <table className="table-base">
-                <thead>
-                  <tr>
-                    <th>Location</th>
-                    <th>Client</th>
-                    <th>Zone</th>
-                    <th>Supervisor</th>
-                    <th>Present / Required</th>
-                    <th>Status</th>
-                    <th />
+      {tab === 'zones' && (
+        <Panel title="Deployment Register" subtitle="Every active location with verified strength">
+          <div className="overflow-x-auto rounded-xl border border-line">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Location</th>
+                  <th>Client</th>
+                  <th>Zone</th>
+                  <th>Supervisor</th>
+                  <th>Present / Required</th>
+                  <th>Status</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {locations.map((site) => (
+                  <tr key={site.id}>
+                    <td className="font-semibold text-slate-800">{site.name}</td>
+                    <td className="text-muted">{site.client_name || '—'}</td>
+                    <td>{site.zone_name}</td>
+                    <td>{site.supervisor_name || '—'}</td>
+                    <td className="font-mono font-bold">
+                      {site.present_count}/{site.required_strength}
+                    </td>
+                    <td>
+                      <StatusBadge status={site.computed_status} />
+                    </td>
+                    <td>
+                      <Button size="sm" variant="ghost" onClick={() => setRosterSite(site)}>
+                        Roster
+                      </Button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {locations.map((site) => (
-                    <tr key={site.id}>
-                      <td className="font-semibold">{site.name}</td>
-                      <td className="text-muted">{site.client_name || '—'}</td>
-                      <td>{site.zone_name}</td>
-                      <td>{site.supervisor_name || '—'}</td>
-                      <td className="font-mono">
-                        {site.present_count}/{site.required_strength}
-                      </td>
-                      <td>
-                        <StatusBadge status={site.computed_status} />
-                      </td>
-                      <td>
-                        <Button size="sm" variant="ghost" onClick={() => setRosterSite(site)}>
-                          Roster
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
-          {tab === 'risk' && (
-            <Panel title="Expiry & compliance risk" subtitle="Within 30 days or unactioned">
-              <div className="space-y-3">
-                <div>
-                  <p className="label">CNIC expiry</p>
-                  {(expiring.cnic || []).length === 0 ? (
-                    <p className="text-[10px] text-muted">None within 30 days.</p>
-                  ) : (
-                    <ul className="space-y-1">
-                      {expiring.cnic.map((row) => (
-                        <li key={row.guard_id} className="flex justify-between text-[10px]">
-                          <span className="text-ink">{row.guard_name}</span>
-                          <span className="font-mono text-amber-600">{row.expiry}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="stat-divider" />
-                <div>
-                  <p className="label">Weapon licences</p>
-                  {(expiring.weapon_licences || []).length === 0 ? (
-                    <p className="text-[10px] text-muted">All licences current.</p>
-                  ) : (
-                    <ul className="space-y-1">
-                      {expiring.weapon_licences.map((row) => (
-                        <li key={row.weapon_id} className="flex justify-between text-[10px]">
-                          <span className="text-ink">{row.serial_number}</span>
-                          <span className="font-mono text-amber-600">{row.expiry}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="stat-divider" />
-                <div>
-                  <p className="label">Unacknowledged critical broadcasts</p>
-                  {unacknowledged.length === 0 ? (
-                    <p className="text-[10px] text-muted">All critical broadcasts acknowledged.</p>
-                  ) : (
-                    <ul className="space-y-1">
-                      {unacknowledged.map((broadcast) => (
-                        <li key={broadcast.id} className="text-[10px]">
-                          <span className="font-semibold text-ink">{broadcast.title}</span>
-                          <span className="ml-1 text-rose-600">
-                            ({broadcast.not_received_count} not received)
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="stat-divider" />
-                <div>
-                  <p className="label">Training / medical</p>
-                  <p className="text-[10px] text-muted">
-                    {(expiring.training || []).length} training · {(expiring.medical || []).length} medical
-                    certificate(s) expiring within 30 days.
-                  </p>
-                </div>
-              </div>
-            </Panel>
-          )}
-        </div>
+      {tab === 'risk' && (
+        <RiskCompliancePanel overview={overview} broadcasts={broadcasts} onRefresh={load} />
       )}
 
       {tab === 'armoury' && (
-        <Panel title="Armoury register" subtitle="Read-only overview · allotment is handled by the Operations Manager">
+        <Panel title="Armoury Register" subtitle="Overview of operational firearms and ammunition">
           <ArmouryPanel weapons={weapons} locations={locations} onChanged={load} canManage={false} />
         </Panel>
       )}
 
       {tab === 'team' && (
-        <div className="space-y-4">
+        <div className="space-y-6">
           <TeamPanel role="CEO" zones={zones} locations={locations} onChanged={load} />
           <AuditLogPanel />
         </div>
       )}
 
       {tab === 'incidents' && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Active emergencies" subtitle="Action taken is tracked per incident">
-            {activeEmergencies.length === 0 ? (
-              <EmptyState title="No active emergencies" />
-            ) : (
-              <IncidentPanel incidents={activeEmergencies} canManage={false} />
-            )}
-          </Panel>
-          <Panel title="Client complaints" subtitle="Complaints and management follow-up">
-            {complaints.length === 0 ? (
-              <EmptyState title="No client complaints" />
-            ) : (
-              <IncidentPanel incidents={complaints} canManage={false} />
-            )}
-          </Panel>
-        </div>
-      )}
-
-      {tab === 'posture' && activeEmergencies.length > 0 && (
-        <Panel
-          title="Active emergencies & client complaints"
-          subtitle="Action-taken visibility for the executive desk"
-          actions={<AlertTriangle size={14} className="text-rose-500" />}
-        >
-          <IncidentPanel incidents={activeEmergencies.slice(0, 6)} canManage={false} compact />
+        <Panel title="Active Emergencies" subtitle="Field incidents and actions taken">
+          {activeEmergencies.length === 0 ? (
+            <EmptyState title="No active emergencies" />
+          ) : (
+            <IncidentPanel incidents={activeEmergencies} canManage={false} />
+          )}
         </Panel>
       )}
 
@@ -440,6 +423,28 @@ export default function CEODashboard({ tab }) {
         open={Boolean(rosterSite)}
         onClose={() => setRosterSite(null)}
       />
+
+      <AttendanceDetailModal
+        type={modalType}
+        onClose={() => setModalType(null)}
+        guards={guards}
+        locations={locations}
+        zones={zones}
+        weapons={weapons}
+        incidents={incidents}
+        leave={leaveRows}
+        onDutyIds={overview?.on_duty_ids || []}
+        absentIds={overview?.absent_ids || []}
+      />
+
+      {toast && (
+        <div className="fixed bottom-5 right-5 z-[1200] max-w-sm rounded-2xl border border-slate-200 bg-white p-4 shadow-xl transition-all">
+          <div className="flex items-start gap-3">
+            <StatusBadge status="PRESENT" label="Live" />
+            <p className="flex-1 text-xs font-semibold text-slate-800">{toast}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

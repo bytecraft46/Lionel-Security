@@ -96,7 +96,7 @@ export function roleLabel(role) {
 
 export const NAV_BY_ROLE = {
   CEO: [
-    { id: 'posture', label: 'Posture' },
+    { id: 'posture', label: 'Home' },
     { id: 'checkins', label: 'Check-ins' },
     { id: 'zones', label: 'Zones & Sites' },
     { id: 'risk', label: 'Risk & Compliance' },

@@ -408,7 +408,7 @@ class _GuardDashboardScreenState extends State<GuardDashboardScreen> {
                     ),
                     const SizedBox(height: 2),
                     const Text(
-                      "DutyDesk Frontline Handset • Hardware Locked",
+                      "Lionel Security Frontline Handset • Hardware Locked",
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w500,

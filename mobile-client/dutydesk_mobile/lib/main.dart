@@ -5,6 +5,7 @@ import 'screens/people_screen.dart';
 import 'screens/attendance_screen.dart';
 import 'screens/requests_screen.dart';
 import 'screens/sign_in_screen.dart';
+import 'services/api_config.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,6 +33,7 @@ class _DutyDeskMobileAppState extends State<DutyDeskMobileApp> {
   }
 
   void _handleSignOut() {
+    ApiConfig.clearToken();
     setState(() {
       _currentGuard = null;
     });
@@ -40,7 +42,7 @@ class _DutyDeskMobileAppState extends State<DutyDeskMobileApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DutyDesk Frontline Handset',
+      title: 'Lionel Security',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.light,
@@ -140,16 +142,12 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
           ),
           child: Row(
             children: [
-              // DutyDesk Logo & Brand
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF3E8FF),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFDDD6FE)),
-                ),
-                child: const Icon(Icons.fingerprint, color: Color(0xFF7C3AED), size: 22),
+              // Lionel Security crest (same mark as the operations console)
+              Image.asset(
+                'assets/brand/lionel-crest.png',
+                width: 34,
+                height: 34,
+                filterQuality: FilterQuality.high,
               ),
               const SizedBox(width: 10),
               Column(
@@ -162,7 +160,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                         text: const TextSpan(
                           children: [
                             TextSpan(
-                              text: "Duty",
+                              text: "Lionel ",
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w900,
@@ -170,7 +168,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                               ),
                             ),
                             TextSpan(
-                              text: "Desk",
+                              text: "Security",
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w900,
@@ -189,7 +187,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                           border: Border.all(color: const Color(0xFFDDD6FE)),
                         ),
                         child: const Text(
-                          "Security Ops",
+                          "Frontline",
                           style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF7C3AED)),
                         ),
                       ),
@@ -207,7 +205,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                       ),
                       const SizedBox(width: 4),
                       const Text(
-                        "ONLINE • Frontline Handset",
+                        "ONLINE • Guard Operations",
                         style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
                       ),
                     ],

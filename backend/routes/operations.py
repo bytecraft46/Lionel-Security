@@ -346,6 +346,63 @@ def overdue_attendance():
     )
 
 
+@operations_bp.route("/attendance/trend", methods=["GET"])
+@jwt_required(roles=STAFF_ROLES)
+def attendance_trend():
+    """Daily check-in counts for one guard over the whole current calendar month.
+
+    The CEO and Operations Manager can read any guard; a supervisor only
+    guards attached to sites inside their own zone(s).
+    """
+    user = current_user()
+
+    guard = db.session.get(User, request.args.get("guard_id") or "")
+    if not guard or guard.role != "GUARD":
+        return jsonify({"error": "guard_id is required."}), 400
+    if not can_access_guard(user, guard):
+        return jsonify({"error": "Forbidden: outside your assigned zone(s)."}), 403
+
+    today = date.today()
+    start = today.replace(day=1)
+    next_month = (start + timedelta(days=32)).replace(day=1)
+    end = next_month - timedelta(days=1)
+    days = (end - start).days + 1
+    logs = AttendanceLog.query.filter(
+        AttendanceLog.guard_id == guard.id,
+        AttendanceLog.punch_type == "IN",
+        AttendanceLog.punch_timestamp >= day_start(start),
+        AttendanceLog.punch_timestamp <= day_end(end),
+    ).all()
+
+    counts = {}
+    for log in logs:
+        key = log.punch_timestamp.date()
+        counts[key] = counts.get(key, 0) + 1
+
+    series = [
+        {
+            "date": (start + timedelta(days=offset)).isoformat(),
+            "count": counts.get(start + timedelta(days=offset), 0),
+        }
+        for offset in range(days)
+    ]
+    return (
+        jsonify(
+            {
+                "guard_id": guard.id,
+                "guard_name": guard.full_name,
+                "month": start.strftime("%Y-%m"),
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "days": days,
+                "series": series,
+                "total": sum(item["count"] for item in series),
+            }
+        ),
+        200,
+    )
+
+
 @operations_bp.route("/attendance/register", methods=["GET"])
 @jwt_required(roles=STAFF_ROLES)
 def attendance_register():

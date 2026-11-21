@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
+import '../services/api_config.dart';
 
 class MobileSignInScreen extends StatefulWidget {
   final Function(Map<String, dynamic> user) onSignInSuccess;
@@ -15,52 +15,332 @@ class MobileSignInScreen extends StatefulWidget {
 }
 
 class _MobileSignInScreenState extends State<MobileSignInScreen> {
-  bool _isSignUpMode = false;
-
   // Sign In Controllers
   final _identifierController = TextEditingController();
   final _pinController = TextEditingController();
   bool _obscurePin = true;
 
-  // Sign Up / Register Controllers
-  final _regNameController = TextEditingController();
-  final _regPhoneController = TextEditingController();
-  final _regCnicController = TextEditingController();
-  final _regPasswordController = TextEditingController();
-  final _regConfirmPasswordController = TextEditingController();
-  String _selectedRole = 'GUARD';
-  bool _obscureRegPassword = true;
-
   bool _isLoading = false;
   String? _errorMessage;
-  String? _successMessage;
   String? _detectedHardwareUuid;
 
-  // Endpoints to probe in priority order (Direct Wi-Fi LAN IP first, then ADB reverse, then emulator)
-  final List<String> _backendHosts = [
-    'http://localhost:5015',
-    'http://127.0.0.1:5015',
-    'http://192.168.18.78:5015',
-    'http://10.0.2.2:5015',
-    'http://$customHost:5015',
-
-  ];
+  // Backend connection state shown in the server card
+  bool _serverOnline = false;
+  bool _isScanningServer = true;
 
   @override
   void initState() {
     super.initState();
     _detectDeviceUuid();
+    _bootstrapServer();
+  }
+
+  /// Reuse the server found last time, otherwise look for one on this network.
+  Future<void> _bootstrapServer() async {
+    final saved = await ApiConfig.loadSavedHost();
+    if (saved != null && await ApiConfig.probe(saved)) {
+      ApiConfig.activeHost = saved;
+      if (mounted) {
+        setState(() {
+          _serverOnline = true;
+          _isScanningServer = false;
+        });
+      }
+      return;
+    }
+
+    final found = await ApiConfig.autoDetect();
+    if (!mounted) return;
+    setState(() {
+      _serverOnline = found != null;
+      _isScanningServer = false;
+    });
+  }
+
+  Future<void> _openServerSheet() async {
+    final controller = TextEditingController(text: ApiConfig.activeHost);
+    bool busy = false;
+    String? message;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            Future<void> connect() async {
+              setSheet(() {
+                busy = true;
+                message = null;
+              });
+              final ok = await ApiConfig.connect(controller.text);
+              if (!context.mounted) return;
+              if (ok) {
+                setSheet(() => busy = false);
+                if (mounted) {
+                  setState(() {
+                    _serverOnline = true;
+                    _isScanningServer = false;
+                  });
+                }
+                Navigator.pop(sheetContext);
+              } else {
+                setSheet(() {
+                  busy = false;
+                  message =
+                      'No Lionel Security backend answered on that address. Check the IP and that both devices are on the same Wi-Fi.';
+                });
+              }
+            }
+
+            Future<void> autoDetect() async {
+              setSheet(() {
+                busy = true;
+                message = 'Scanning this Wi-Fi network...';
+              });
+              final host = await ApiConfig.autoDetect();
+              if (!context.mounted) return;
+              setSheet(() {
+                busy = false;
+                if (host != null) {
+                  controller.text = host;
+                  message = 'Found a backend at $host. Tap Connect.';
+                } else {
+                  message =
+                      'No backend found. Start the backend on the other PC and enter its IP manually.';
+                }
+              });
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Backend Server',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Enter the IP address of the laptop / PC running the Lionel Security backend. The handset and that computer must be on the same Wi-Fi network.',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: controller,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                    ),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(
+                        Icons.dns_outlined,
+                        color: Color(0xFF94A3B8),
+                        size: 20,
+                      ),
+                      hintText: '192.168.18.78:5015',
+                      hintStyle: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFFCBD5E1),
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFFF8FAFC),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(
+                          color: Color(0xFF7C3AED),
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (message != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      message!,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF7C3AED),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: busy ? null : autoDetect,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF7C3AED),
+                            side: const BorderSide(color: Color(0xFFDDD6FE)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          icon: busy
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFF7C3AED),
+                                  ),
+                                )
+                              : const Icon(Icons.wifi_find, size: 18),
+                          label: const Text(
+                            'Auto-Detect',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: busy ? null : connect,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF7C3AED),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text(
+                            'Save & Connect',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  Widget _buildServerCard() {
+    final dotColor = _serverOnline
+        ? const Color(0xFF10B981)
+        : (_isScanningServer
+            ? const Color(0xFFF59E0B)
+            : const Color(0xFF94A3B8));
+    final title = _serverOnline
+        ? 'Connected to Lionel Security server'
+        : (_isScanningServer
+            ? 'Searching for Lionel Security server...'
+            : 'Lionel Security server not reachable');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _serverOnline
+              ? const Color(0xFFA7F3D0)
+              : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: _serverOnline
+                        ? const Color(0xFF047857)
+                        : const Color(0xFF475569),
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  ApiConfig.activeHost,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontFamily: 'monospace',
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _isScanningServer ? null : _openServerSheet,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF7C3AED),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+            label: const Text(
+              'Change',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   void dispose() {
     _identifierController.dispose();
     _pinController.dispose();
-    _regNameController.dispose();
-    _regPhoneController.dispose();
-    _regCnicController.dispose();
-    _regPasswordController.dispose();
-    _regConfirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -95,7 +375,6 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
-      _successMessage = null;
     });
 
     final identifier = _identifierController.text.trim();
@@ -109,143 +388,42 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
       return;
     }
 
-    Map<String, dynamic>? successData;
-    String lastError = 'Unable to reach DutyDesk server. Ensure computer is running backend.';
+    try {
+      final response = await ApiConfig.postWithFallback(
+        path: '/api/auth/login',
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'identifier': identifier,
+          'password': password,
+          'device_uuid': _detectedHardwareUuid,
+        }),
+        timeout: const Duration(seconds: 10),
+      );
 
-    for (final host in _backendHosts) {
-      try {
-        final response = await http
-            .post(
-              Uri.parse('$host/api/v1/auth/login'),
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({
-                'identifier': identifier,
-                'password': password,
-                'role': 'GUARD',
-                'device_uuid': _detectedHardwareUuid,
-              }),
-            )
-            .timeout(const Duration(seconds: 4));
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
 
-        final data = jsonDecode(response.body);
-        if (response.statusCode == 200) {
-          successData = data;
-          break;
-        } else {
-          lastError = data['error'] ?? 'Sign in failed.';
-        }
-      } catch (_) {
-        continue;
+      if (response.statusCode == 200 && data['user'] != null) {
+        ApiConfig.setToken(
+          (data['access_token'] ?? data['token']) as String?,
+        );
+        setState(() {
+          _serverOnline = true;
+          _isLoading = false;
+        });
+        widget.onSignInSuccess(Map<String, dynamic>.from(data['user'] as Map));
+      } else {
+        setState(() {
+          _errorMessage = data['error'] ?? 'Sign in failed.';
+          _isLoading = false;
+        });
       }
-    }
-
-    if (!mounted) return;
-
-    if (successData != null && successData['user'] != null) {
-      widget.onSignInSuccess(successData['user']);
-    } else {
+    } catch (_) {
+      if (!mounted) return;
       setState(() {
-        _errorMessage = lastError;
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _performRegister() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-      _successMessage = null;
-    });
-
-    final name = _regNameController.text.trim();
-    final phone = _regPhoneController.text.trim();
-    final cnic = _regCnicController.text.trim();
-    final password = _regPasswordController.text.trim();
-    final confirmPassword = _regConfirmPasswordController.text.trim();
-
-    if (name.isEmpty) {
-      setState(() {
-        _errorMessage = 'Full Name is required.';
-        _isLoading = false;
-      });
-      return;
-    }
-
-    if (phone.isEmpty) {
-      setState(() {
-        _errorMessage = 'Mobile phone number is required.';
-        _isLoading = false;
-      });
-      return;
-    }
-
-    if (password.length < 4) {
-      setState(() {
-        _errorMessage = 'PIN/Password must be at least 4 digits or characters.';
-        _isLoading = false;
-      });
-      return;
-    }
-
-    if (password != confirmPassword) {
-      setState(() {
-        _errorMessage = 'Passwords do not match.';
-        _isLoading = false;
-      });
-      return;
-    }
-
-    Map<String, dynamic>? successData;
-    String lastError = 'Unable to register on DutyDesk server.';
-
-    for (final host in _backendHosts) {
-      try {
-        final response = await http
-            .post(
-              Uri.parse('$host/api/v1/auth/register'),
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({
-                'full_name': name,
-                'phone_number': phone,
-                'cnic': cnic.isNotEmpty ? cnic : null,
-                'password': password,
-                'role': _selectedRole,
-                'device_uuid': _detectedHardwareUuid,
-                'platform': kIsWeb ? 'WEB' : (Platform.isAndroid ? 'ANDROID' : 'IOS'),
-              }),
-            )
-            .timeout(const Duration(seconds: 4));
-
-        final data = jsonDecode(response.body);
-        if (response.statusCode == 201 || response.statusCode == 200) {
-          successData = data;
-          break;
-        } else {
-          lastError = data['error'] ?? 'Registration failed.';
-        }
-      } catch (_) {
-        continue;
-      }
-    }
-
-    if (!mounted) return;
-
-    if (successData != null && successData['user'] != null) {
-      setState(() {
-        _isLoading = false;
-        _successMessage = 'Employee registered successfully! Logging you in...';
-      });
-
-      // Auto sign in with the new registered user
-      Future.delayed(const Duration(milliseconds: 1000), () {
-        if (mounted) {
-          widget.onSignInSuccess(successData!['user']);
-        }
-      });
-    } else {
-      setState(() {
-        _errorMessage = lastError;
+        _serverOnline = false;
+        _errorMessage =
+            'Unable to reach the Lionel Security server at ${ApiConfig.activeHost}. Tap "Change" to point the app at the right computer.';
         _isLoading = false;
       });
     }
@@ -263,27 +441,12 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
             children: [
               const SizedBox(height: 12),
 
-              // DutyDesk Frontline Header
-              Container(
-                width: 68,
-                height: 68,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEDE9FE),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFFDDD6FE), width: 2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF7C3AED).withValues(alpha: 0.15),
-                      blurRadius: 16,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.fingerprint_rounded,
-                  size: 40,
-                  color: Color(0xFF7C3AED),
-                ),
+              // Lionel Security crest (same mark as the operations console)
+              Image.asset(
+                'assets/brand/lionel-crest.png',
+                width: 88,
+                height: 88,
+                filterQuality: FilterQuality.high,
               ),
 
               const SizedBox(height: 14),
@@ -297,9 +460,9 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
                     letterSpacing: -0.5,
                   ),
                   children: [
-                    TextSpan(text: 'Duty'),
+                    TextSpan(text: 'Lionel '),
                     TextSpan(
-                      text: 'Desk',
+                      text: 'Security',
                       style: TextStyle(color: Color(0xFF7C3AED)),
                     ),
                   ],
@@ -309,7 +472,7 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
               const SizedBox(height: 4),
 
               const Text(
-                'Frontline Guard Attendance & Biometrics',
+                'Security Operations · Frontline Handset',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -320,96 +483,8 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
 
               const SizedBox(height: 24),
 
-              // Mode Switcher Tabs: [Sign In] | [Register Employee]
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE2E8F0),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _isSignUpMode = false;
-                            _errorMessage = null;
-                            _successMessage = null;
-                          });
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            color: !_isSignUpMode ? Colors.white : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: !_isSignUpMode
-                                ? [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.06),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ]
-                                : null,
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            'Sign In',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: !_isSignUpMode
-                                  ? const Color(0xFF7C3AED)
-                                  : const Color(0xFF64748B),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _isSignUpMode = true;
-                            _errorMessage = null;
-                            _successMessage = null;
-                          });
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: BoxDecoration(
-                            color: _isSignUpMode ? Colors.white : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: _isSignUpMode
-                                ? [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.06),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ]
-                                : null,
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            'Register Employee',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w800,
-                              color: _isSignUpMode
-                                  ? const Color(0xFF7C3AED)
-                                  : const Color(0xFF64748B),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              // Backend server connection (works with any laptop on this Wi-Fi)
+              _buildServerCard(),
 
               const SizedBox(height: 18),
 
@@ -442,34 +517,6 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
                 const SizedBox(height: 14),
               ],
 
-              if (_successMessage != null) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF0FDF4),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFBBF7D0)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.check_circle_outline, color: Color(0xFF16A34A), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _successMessage!,
-                          style: const TextStyle(
-                            color: Color(0xFF15803D),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-              ],
-
               // Card Container
               Container(
                 padding: const EdgeInsets.all(22),
@@ -485,7 +532,7 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
                     ),
                   ],
                 ),
-                child: _isSignUpMode ? _buildSignUpForm() : _buildSignInForm(),
+                child: _buildSignInForm(),
               ),
 
               const SizedBox(height: 24),
@@ -497,7 +544,7 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
                   const Icon(Icons.headset_mic_outlined, size: 14, color: Color(0xFF94A3B8)),
                   const SizedBox(width: 6),
                   const Text(
-                    'DutyDesk Operations Control: +92 21 111-DUTY',
+                    'Lionel Security Operations Control: +92 21 111-DUTY',
                     style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                   ),
                 ],
@@ -683,294 +730,6 @@ class _MobileSignInScreenState extends State<MobileSignInScreen> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildSignUpForm() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Register New Employee',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            color: Color(0xFF0F172A),
-          ),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Enrolls employee profile & binds this handset as authorized device',
-          style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
-        ),
-
-        const SizedBox(height: 18),
-
-        // Full Name
-        const Text(
-          'Full Name *',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _regNameController,
-          textCapitalization: TextCapitalization.words,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          decoration: _inputDecoration(
-            hint: 'e.g. Tariq Mehmood',
-            icon: Icons.badge_outlined,
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Mobile Phone Number
-        const Text(
-          'Mobile Phone Number *',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _regPhoneController,
-          keyboardType: TextInputType.phone,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          decoration: _inputDecoration(
-            hint: 'e.g. +923001234567',
-            icon: Icons.phone_outlined,
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // CNIC / National ID
-        const Text(
-          'National ID / CNIC (Optional)',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _regCnicController,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          decoration: _inputDecoration(
-            hint: 'e.g. 42101-1234567-1',
-            icon: Icons.credit_card_outlined,
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Role Selector
-        const Text(
-          'Operational Role *',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF8FAFC),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: _selectedRole,
-              isExpanded: true,
-              icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF7C3AED)),
-              items: const [
-                DropdownMenuItem(
-                  value: 'GUARD',
-                  child: Row(
-                    children: [
-                      Icon(Icons.shield_outlined, size: 18, color: Color(0xFF7C3AED)),
-                      SizedBox(width: 8),
-                      Text('Frontline Security Guard', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: 'SUPERVISOR',
-                  child: Row(
-                    children: [
-                      Icon(Icons.supervisor_account_outlined, size: 18, color: Color(0xFF0284C7)),
-                      SizedBox(width: 8),
-                      Text('Field Supervisor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: 'ADMIN',
-                  child: Row(
-                    children: [
-                      Icon(Icons.admin_panel_settings_outlined, size: 18, color: Color(0xFFD97706)),
-                      SizedBox(width: 8),
-                      Text('Operations Admin', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
-              ],
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedRole = val);
-              },
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Security PIN / Password
-        const Text(
-          'Create Security PIN / Password *',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _regPasswordController,
-          obscureText: _obscureRegPassword,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          decoration: InputDecoration(
-            prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF94A3B8), size: 20),
-            suffixIcon: IconButton(
-              icon: Icon(
-                _obscureRegPassword ? Icons.visibility_off : Icons.visibility,
-                color: const Color(0xFF94A3B8),
-                size: 18,
-              ),
-              onPressed: () => setState(() => _obscureRegPassword = !_obscureRegPassword),
-            ),
-            hintText: 'Enter 4-6 digit PIN or password',
-            hintStyle: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1)),
-            filled: true,
-            fillColor: const Color(0xFFF8FAFC),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFF7C3AED), width: 1.5),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Confirm Password
-        const Text(
-          'Confirm Security PIN *',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF334155)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _regConfirmPasswordController,
-          obscureText: _obscureRegPassword,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          decoration: _inputDecoration(
-            hint: 'Re-enter security PIN',
-            icon: Icons.lock_clock_outlined,
-          ),
-        ),
-
-        const SizedBox(height: 16),
-
-        // Handset Binding Pill
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF1F5F9),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.link, size: 14, color: Color(0xFF7C3AED)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _detectedHardwareUuid != null
-                      ? 'Enroll Hardware ID: ${_detectedHardwareUuid!.substring(0, _detectedHardwareUuid!.length > 18 ? 18 : _detectedHardwareUuid!.length)}...'
-                      : 'Hardware Device binding will activate upon enrollment',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontFamily: 'monospace',
-                    color: Color(0xFF475569),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 22),
-
-        // Register Button
-        SizedBox(
-          width: double.infinity,
-          height: 48,
-          child: ElevatedButton(
-            onPressed: _isLoading ? null : _performRegister,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF7C3AED),
-              foregroundColor: Colors.white,
-              elevation: 2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            child: _isLoading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'Register & Enroll Handset',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      SizedBox(width: 8),
-                      Icon(Icons.person_add_alt_1_rounded, size: 18),
-                    ],
-                  ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  InputDecoration _inputDecoration({required String hint, required IconData icon}) {
-    return InputDecoration(
-      prefixIcon: Icon(icon, color: const Color(0xFF94A3B8), size: 20),
-      hintText: hint,
-      hintStyle: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1)),
-      filled: true,
-      fillColor: const Color(0xFFF8FAFC),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: Color(0xFF7C3AED), width: 1.5),
-      ),
     );
   }
 }

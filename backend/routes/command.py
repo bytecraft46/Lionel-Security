@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 
 from database import db
 from models import (
+    INCIDENT_TYPES,
     AuditLog,
     BroadcastAck,
     CommandBroadcast,
@@ -26,7 +27,14 @@ from security import (
     record_audit,
     scoped_zone_ids,
 )
-from services import day_start, scoped_post_query, todays_logs
+from services import (
+    ALERT_PROXIMITY_RADIUS_KM,
+    day_start,
+    incident_alert_recipients,
+    incidents_visible_to_guard,
+    scoped_post_query,
+    todays_logs,
+)
 from utils.realtime import emit_operational, emit_to_room
 
 command_bp = Blueprint("command", __name__)
@@ -260,20 +268,87 @@ def acknowledge_broadcast(broadcast_id):
 @jwt_required()
 def list_incidents():
     user = current_user()
-    query = Incident.query.order_by(Incident.occurred_at.desc())
+    status = (request.args.get("status") or "").upper() or None
     if user.role == "GUARD":
-        query = query.filter(Incident.reported_by_id == user.id)
-    else:
-        zone_ids = scoped_zone_ids(user)
-        if zone_ids is not None:
-            query = query.filter(
-                Incident.zone_id.in_(list(zone_ids) or ["__none__"])
-            )
-    status = request.args.get("status")
+        rows = incidents_visible_to_guard(user, status=status)
+        return (
+            jsonify(
+                {
+                    "incidents": [row.to_dict() for row in rows],
+                    "alert_radius_km": ALERT_PROXIMITY_RADIUS_KM,
+                }
+            ),
+            200,
+        )
+    query = Incident.query.order_by(Incident.occurred_at.desc())
+    zone_ids = scoped_zone_ids(user)
+    if zone_ids is not None:
+        query = query.filter(Incident.zone_id.in_(list(zone_ids) or ["__none__"]))
     if status:
-        query = query.filter(Incident.status == status.upper())
+        query = query.filter(Incident.status == status)
+    # Client complaints are restricted to the Ops Manager.
+    if user.role != "OPS_MANAGER":
+        query = query.filter(Incident.incident_type != "CLIENT_COMPLAINT")
     rows = query.limit(200).all()
     return jsonify({"incidents": [row.to_dict() for row in rows]}), 200
+
+
+ALERT_TYPE_ALIASES = {
+    "INTRUSION": "ATTEMPTED_INTRUSION",
+    "MEDICAL": "MEDICAL_EMERGENCY",
+}
+
+
+def _incident_type(value):
+    raw = (value or "").upper()
+    raw = ALERT_TYPE_ALIASES.get(raw, raw)
+    return raw if raw in INCIDENT_TYPES else None
+
+
+def _record_incident(reporter, post, incident_type, data):
+    incident = Incident(
+        incident_type=incident_type,
+        post_id=post.id,
+        zone_id=post.zone_id,
+        reported_by_id=reporter.id,
+        personnel_involved=data.get("personnel_involved"),
+        occurred_at=datetime.utcnow(),
+        immediate_action=data.get("immediate_action"),
+        supervisor_report=data.get("supervisor_report"),
+        latitude=data.get("latitude"),
+        longitude=data.get("longitude"),
+        status="OPEN",
+    )
+    db.session.add(incident)
+    record_audit(
+        "INCIDENT_REPORTED",
+        "incident",
+        incident.id,
+        {"type": incident_type},
+        user=reporter,
+    )
+    db.session.commit()
+    return incident
+
+
+def _broadcast_incident(incident):
+    """Fan out to command, every supervisor, and guards within the alert radius."""
+    recipients = incident_alert_recipients(incident)
+    payload = incident.to_dict()
+    payload["alert"] = {
+        "radius_km": recipients["radius_km"],
+        "command_recipients": recipients["command_count"],
+        "supervisor_recipients": recipients["supervisor_count"],
+        "nearby_guard_count": recipients["nearby_guard_count"],
+    }
+    # No zone room here: guards outside the 10 km radius must not receive
+    # the alert, and the reporter is only re-reached if they fall in range.
+    emit_operational(
+        "INCIDENT_BROADCAST",
+        payload,
+        extra_rooms=[f"user_{user_id}" for user_id in recipients["direct_user_ids"]],
+    )
+    return payload
 
 
 @command_bp.route("/incidents", methods=["POST"])
@@ -291,40 +366,89 @@ def create_incident():
     else:
         assert_zone_access(actor, post.zone_id)
 
-    incident_type = (data.get("incident_type") or "").upper()
-    if incident_type not in (
-        "THEFT",
-        "BURGLARY",
-        "ATTEMPTED_INTRUSION",
-        "FIRE",
-        "MEDICAL_EMERGENCY",
-        "SUSPICIOUS_ACTIVITY",
-        "GUARD_MISCONDUCT",
-        "CLIENT_COMPLAINT",
-        "WEAPON_INCIDENT",
-    ):
+    incident_type = _incident_type(data.get("incident_type"))
+    if not incident_type:
         return jsonify({"error": "Invalid incident_type."}), 400
 
-    incident = Incident(
-        incident_type=incident_type,
-        post_id=post.id,
-        zone_id=post.zone_id,
-        reported_by_id=actor.id,
-        personnel_involved=data.get("personnel_involved"),
-        occurred_at=datetime.utcnow(),
-        immediate_action=data.get("immediate_action"),
-        supervisor_report=data.get("supervisor_report"),
-        latitude=data.get("latitude"),
-        longitude=data.get("longitude"),
-        status="OPEN",
+    incident = _record_incident(actor, post, incident_type, data)
+    payload = _broadcast_incident(incident)
+    return jsonify({"incident": payload, "alert": payload["alert"]}), 201
+
+
+@command_bp.route("/alerts/trigger", methods=["POST"])
+@jwt_required()
+def trigger_alert():
+    """Field SOS endpoint used by the guard handset."""
+    actor = current_user()
+    data = request.get_json(silent=True) or {}
+
+    if actor.role == "GUARD":
+        guard = actor
+    else:
+        if actor.role not in STAFF_ROLES:
+            return jsonify({"error": "Forbidden."}), 403
+        guard = db.session.get(
+            User, data.get("raised_by_guard_id") or data.get("guard_id") or ""
+        )
+        if not guard or guard.role != "GUARD":
+            return jsonify({"error": "raised_by_guard_id is required."}), 400
+        if not can_access_guard(actor, guard):
+            return jsonify({"error": "Forbidden: outside your assigned zone(s)."}), 403
+
+    incident_type = _incident_type(data.get("incident_type") or "PANIC")
+    if not incident_type:
+        return jsonify({"error": "Invalid incident_type."}), 400
+    if incident_type == "CLIENT_COMPLAINT":
+        return jsonify({"error": "Client complaints cannot be raised from a handset."}), 403
+
+    post = db.session.get(Post, guard.assigned_post_id) if guard.assigned_post_id else None
+    supplied_post = db.session.get(Post, data.get("post_id")) if data.get("post_id") else None
+    if supplied_post and supplied_post.zone_id == guard.zone_id:
+        post = supplied_post
+    if not post:
+        return jsonify({"error": "No deployment location is assigned to this guard."}), 400
+
+    incident = _record_incident(
+        guard,
+        post,
+        incident_type,
+        {
+            "personnel_involved": data.get("personnel_involved"),
+            "immediate_action": data.get("notes") or data.get("immediate_action"),
+            "supervisor_report": data.get("supervisor_report"),
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+        },
     )
-    db.session.add(incident)
-    record_audit(
-        "INCIDENT_REPORTED", "incident", incident.id, {"type": incident_type}, user=actor
+    payload = _broadcast_incident(incident)
+    return jsonify({"incident": payload, "alert": payload["alert"]}), 201
+
+
+@command_bp.route("/alerts/user/<guard_id>", methods=["GET"])
+@jwt_required()
+def user_alerts(guard_id):
+    """Alert inbox for a guard: own reports plus nearby open alerts."""
+    actor = current_user()
+    guard = db.session.get(User, guard_id)
+    if not guard or guard.role != "GUARD":
+        return jsonify({"error": "Guard not found."}), 404
+    if actor.role == "GUARD" and actor.id != guard.id:
+        return jsonify({"error": "Guards may only read their own alerts."}), 403
+    if actor.role != "GUARD" and not can_access_guard(actor, guard):
+        return jsonify({"error": "Forbidden: outside your assigned zone(s)."}), 403
+
+    status = (request.args.get("status") or "").upper() or None
+    rows = incidents_visible_to_guard(guard, status=status)
+    return (
+        jsonify(
+            {
+                "incidents": [row.to_dict() for row in rows],
+                "guard_id": guard.id,
+                "alert_radius_km": ALERT_PROXIMITY_RADIUS_KM,
+            }
+        ),
+        200,
     )
-    db.session.commit()
-    emit_operational("INCIDENT_BROADCAST", incident.to_dict(), zone_id=post.zone_id)
-    return jsonify({"incident": incident.to_dict()}), 201
 
 
 @command_bp.route("/incidents/<incident_id>", methods=["PUT"])

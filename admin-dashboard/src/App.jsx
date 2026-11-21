@@ -1,6 +1,7 @@
 import React from 'react';
 import { ShieldOff } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
 import AppShell from './components/layout/AppShell';
 import SignInPage from './pages/SignInPage';
 import CEODashboard from './pages/ceo/CEODashboard';
@@ -60,8 +61,10 @@ function RoutedApp() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <RoutedApp />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <RoutedApp />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

@@ -2,12 +2,13 @@
 import math
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 
 from database import db
 from models import (
     AttendanceLog,
     CommandBroadcast,
+    GuardLocationBreadcrumb,
     Incident,
     LeaveRequest,
     Post,
@@ -17,6 +18,9 @@ from models import (
     Weapon,
 )
 from security import scoped_zone_ids
+from utils.geo import haversine_distance_meters
+
+ALERT_PROXIMITY_RADIUS_KM = 10.0
 
 
 def day_start(day: date) -> datetime:
@@ -120,6 +124,28 @@ def duty_window(duty_start, duty_end, moment):
             start -= timedelta(days=1)
             end -= timedelta(days=1)
     return start, end
+
+
+def expected_shift_guard_ids(guards, now: datetime = None):
+    """Guards whose duty-profile window covers `now`.
+
+    Used to compute expected strength when no roster has been published for
+    the day, so absence reflects duty profiles instead of an empty roster.
+    """
+    local_now = now or datetime.now()
+    expected = set()
+    for guard in guards:
+        profile = guard.profile
+        if not profile:
+            continue
+        start_local, end_local = duty_window(
+            profile.duty_start, profile.duty_end, local_now
+        )
+        if not start_local:
+            continue
+        if start_local <= local_now <= end_local:
+            expected.add(guard.id)
+    return expected
 
 
 def overdue_checkins(user: User, now: datetime = None):
@@ -306,6 +332,15 @@ def zone_snapshot(user: User, day: date = None):
     query = Zone.query
     if zone_ids is not None:
         query = query.filter(Zone.id.in_(list(zone_ids) or ["__none__"]))
+    assigned_by_post = {}
+    for guard in User.query.filter(
+        User.role == "GUARD",
+        User.employment_status != "TERMINATED",
+        User.assigned_post_id.isnot(None),
+    ).all():
+        assigned_by_post[guard.assigned_post_id] = (
+            assigned_by_post.get(guard.assigned_post_id, 0) + 1
+        )
     zones = []
     for zone in query.order_by(Zone.name).all():
         posts = [p for p in location_snapshot(user, day) if p["zone_id"] == zone.id]
@@ -325,6 +360,7 @@ def zone_snapshot(user: User, day: date = None):
                 "location_count": len(posts),
                 "present_count": present,
                 "required_strength": required,
+                "assigned_guards": sum(assigned_by_post.get(p["id"], 0) for p in posts),
                 "vacant": max(0, required - present),
             }
         )
@@ -349,6 +385,13 @@ def command_overview(user: User, day: date = None):
         Roster.duty_date == day, Roster.duty_shift == shift
     ).all()
     rostered_ids = {r.guard_id for r in rostered if r.guard_id in guard_ids}
+    if rostered_ids:
+        expected_ids = set(rostered_ids)
+    else:
+        expected_ids = expected_shift_guard_ids(active_guards) & guard_ids
+    expected_ids -= set(leaves)
+    present_ids = duty & guard_ids
+    absent_ids = expected_ids - present_ids
 
     weapons = [
         w
@@ -364,6 +407,9 @@ def command_overview(user: User, day: date = None):
         incidents = incidents.filter(
             Incident.zone_id.in_(list(scoped_zone_ids(user)) or ["__none__"])
         )
+    # Client complaints are restricted to the Ops Manager.
+    if user.role != "OPS_MANAGER":
+        incidents = incidents.filter(Incident.incident_type != "CLIENT_COMPLAINT")
     incidents = incidents.order_by(Incident.occurred_at.desc()).all()
 
     broadcasts = CommandBroadcast.query.order_by(
@@ -381,7 +427,7 @@ def command_overview(user: User, day: date = None):
         "total_guards": len(active_guards),
         "total_locations": len(locations),
         "on_duty": len(duty),
-        "absent": max(0, len(rostered_ids) - len(duty & rostered_ids)),
+        "absent": len(absent_ids),
         "on_leave": len([r for r in leave_rows if r.leave_type != "WEEKLY_REST"]),
         "on_rest": len([r for r in leave_rows if r.leave_type == "WEEKLY_REST"]),
         "vacant_posts": sum(loc["vacant"] for loc in locations),
@@ -400,6 +446,8 @@ def command_overview(user: User, day: date = None):
         "zones": zones,
         "locations": locations,
         "incidents": [inc.to_dict() for inc in incidents[:12]],
+        "on_duty_ids": sorted(present_ids),
+        "absent_ids": sorted(absent_ids),
         "broadcasts": [b.to_dict() for b in broadcasts],
         "expiring": expiring,
         "attention": attention,
@@ -547,3 +595,151 @@ def sitrep(user: User, day: date = None):
         "expiring": data["expiring"],
         "narrative": lines,
     }
+
+
+def _latest_guard_coordinates():
+    """Last reported GPS fix per guard, from attendance punch breadcrumbs."""
+    latest = (
+        db.session.query(
+            GuardLocationBreadcrumb.guard_id.label("guard_id"),
+            func.max(GuardLocationBreadcrumb.timestamp).label("last_seen"),
+        )
+        .group_by(GuardLocationBreadcrumb.guard_id)
+        .subquery()
+    )
+    rows = (
+        db.session.query(GuardLocationBreadcrumb)
+        .join(
+            latest,
+            and_(
+                GuardLocationBreadcrumb.guard_id == latest.c.guard_id,
+                GuardLocationBreadcrumb.timestamp == latest.c.last_seen,
+            ),
+        )
+        .all()
+    )
+    return {row.guard_id: (float(row.latitude), float(row.longitude)) for row in rows}
+
+
+def guard_last_coordinates(user: User):
+    """Best-known position for a guard: latest punch ping, else assigned post."""
+    if not user or user.role != "GUARD":
+        return None
+    breadcrumb = (
+        GuardLocationBreadcrumb.query.filter_by(guard_id=user.id)
+        .order_by(GuardLocationBreadcrumb.timestamp.desc())
+        .first()
+    )
+    if breadcrumb:
+        return float(breadcrumb.latitude), float(breadcrumb.longitude)
+    if user.assigned_post_id:
+        post = db.session.get(Post, user.assigned_post_id)
+        if post:
+            return float(post.lat), float(post.lng)
+    return None
+
+
+def incident_coordinates(incident: Incident):
+    """Alert origin: reported GPS coordinates, else the post geofence centre."""
+    if incident.latitude is not None and incident.longitude is not None:
+        return float(incident.latitude), float(incident.longitude)
+    post = incident.post or (
+        db.session.get(Post, incident.post_id) if incident.post_id else None
+    )
+    if post:
+        return float(post.lat), float(post.lng)
+    return None
+
+
+def incident_alert_recipients(incident: Incident, radius_km: float = ALERT_PROXIMITY_RADIUS_KM):
+    """Resolve who must receive a field alert.
+
+    CEO and Ops Manager are alerted company-wide. Supervisors are alerted only
+    when the incident is in their zone. Guards are alerted when their last
+    known position is within ``radius_km`` of the alert origin. The reporting
+    guard is not re-notified.
+    """
+    command = User.query.filter(
+        User.is_active.is_(True), User.role.in_(("CEO", "OPS_MANAGER"))
+    ).all()
+    supervisors = [
+        user
+        for user in User.query.filter(
+            User.is_active.is_(True), User.role == "SUPERVISOR"
+        ).all()
+        if incident.zone_id and incident.zone_id in scoped_zone_ids(user)
+    ]
+    supervisor_ids = {user.id for user in supervisors}
+
+    origin = incident_coordinates(incident)
+    nearby_guards = []
+    if origin:
+        radius_m = float(radius_km) * 1000.0
+        positions = _latest_guard_coordinates()
+        guards = User.query.filter(
+            User.is_active.is_(True),
+            User.role == "GUARD",
+            User.id != incident.reported_by_id,
+        ).all()
+        posts = {post.id: post for post in Post.query.all()}
+        for guard in guards:
+            coordinates = positions.get(guard.id)
+            if not coordinates and guard.assigned_post_id:
+                post = posts.get(guard.assigned_post_id)
+                if post:
+                    coordinates = (float(post.lat), float(post.lng))
+            if not coordinates:
+                continue
+            distance = haversine_distance_meters(
+                origin[0], origin[1], coordinates[0], coordinates[1]
+            )
+            if distance <= radius_m:
+                nearby_guards.append((guard, distance))
+
+    # Command users are reached through the ceo_command/ops_command rooms.
+    direct_user_ids = supervisor_ids | {guard.id for guard, _ in nearby_guards}
+    return {
+        "direct_user_ids": sorted(direct_user_ids),
+        "radius_km": float(radius_km),
+        "command_count": len(command),
+        "supervisor_count": len(supervisors),
+        "nearby_guard_ids": [guard.id for guard, _ in nearby_guards],
+        "nearby_guard_count": len(nearby_guards),
+    }
+
+
+def incidents_visible_to_guard(guard: User, status: str = None, limit: int = 200):
+    """A guard sees their own reports plus unresolved alerts raised within range."""
+    base = Incident.query.filter(Incident.incident_type != "CLIENT_COMPLAINT")
+    if status:
+        base = base.filter(Incident.status == status)
+    base = base.order_by(Incident.occurred_at.desc())
+
+    own = base.filter(Incident.reported_by_id == guard.id).limit(limit).all()
+    nearby = []
+    origin = guard_last_coordinates(guard)
+    if origin:
+        radius_m = ALERT_PROXIMITY_RADIUS_KM * 1000.0
+        candidates = (
+            base.filter(
+                Incident.reported_by_id != guard.id, Incident.status != "RESOLVED"
+            )
+            .limit(limit * 2)
+            .all()
+        )
+        for incident in candidates:
+            coordinates = incident_coordinates(incident)
+            if not coordinates:
+                continue
+            if (
+                haversine_distance_meters(
+                    origin[0], origin[1], coordinates[0], coordinates[1]
+                )
+                <= radius_m
+            ):
+                nearby.append(incident)
+
+    merged = {incident.id: incident for incident in own + nearby}
+    return sorted(
+        merged.values(), key=lambda incident: incident.occurred_at or datetime.min, reverse=True
+    )[:limit]

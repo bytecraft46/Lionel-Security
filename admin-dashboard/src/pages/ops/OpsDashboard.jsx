@@ -13,6 +13,8 @@ import {
   Spinner,
   StatusBadge,
 } from '../../components/ui';
+import AttendanceDetailModal from '../../components/ui/AttendanceDetailModal';
+import GuardTrendPanel from '../../components/ui/GuardTrendPanel';
 import OperationsMap from '../../components/map/OperationsMap';
 import RosterDrawer from '../shared/RosterDrawer';
 import TeamPanel from '../shared/TeamPanel';
@@ -38,6 +40,7 @@ export default function OpsDashboard({ tab }) {
   const [toast, setToast] = useState(null);
   const [rosterSite, setRosterSite] = useState(null);
   const [selectedSite, setSelectedSite] = useState(null);
+  const [modalType, setModalType] = useState(null);
 
   const loadSeq = useRef(0);
   const refreshTimer = useRef(null);
@@ -71,7 +74,6 @@ export default function OpsDashboard({ tab }) {
     }
   }, []);
 
-  // Coalesce bursts of socket events into one trailing refresh.
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current) return;
     refreshTimer.current = setTimeout(() => {
@@ -94,26 +96,17 @@ export default function OpsDashboard({ tab }) {
   }, [toast]);
 
   useSocketEvent('ATTENDANCE_PUNCHED', (record) => {
-    setStream((previous) => [record, ...previous.filter((row) => row.id !== record.id)].slice(0, 30));
-    setToast(
-      record.status === 'FLAGGED_ANOMALY'
-        ? `⚠️ ${record.guard_name} flagged at ${record.post_name}`
-        : `${record.punch_type === 'IN' ? '🟢' : '⚪'} ${record.guard_name} punched ${record.punch_type} at ${record.post_name}`,
-    );
+    setStream((prev) => [record, ...prev.filter((r) => r.id !== record.id)].slice(0, 30));
+    setToast(`${record.punch_type === 'IN' ? '🟢 Check-in' : '⚪ Check-out'}: ${record.guard_name} at ${record.post_name}`);
   });
-  useSocketEvent('ATTENDANCE_FLAGGED', (payload) => {
-    setToast(`🚨 Attendance anomaly: ${payload.guard_name} — ${(payload.reasons || []).join(', ')}`);
-  });
-  useSocketEvent('BROADCAST_ALERT', (broadcast) => {
-    setToast(`📣 ${broadcast.priority} broadcast: ${broadcast.title}`);
+  useSocketEvent('BROADCAST_ALERT', (b) => {
+    setToast(`📣 Command Broadcast: ${b.title}`);
     scheduleRefresh();
   });
-  useSocketEvent('BROADCAST_ACK_UPDATED', () => scheduleRefresh());
-  useSocketEvent('INCIDENT_BROADCAST', (incident) => {
-    setToast(`🚨 ${incident.incident_type.replaceAll('_', ' ')} at ${incident.post_name}`);
+  useSocketEvent('INCIDENT_BROADCAST', (inc) => {
+    setToast(`🚨 Incident Reported: ${inc.incident_type.replaceAll('_', ' ')}`);
     scheduleRefresh();
   });
-  useSocketEvent('INSPECTION_RECORDED', () => scheduleRefresh());
 
   const kpis = overview?.kpis || {};
   const zones = overview?.zones || [];
@@ -121,12 +114,12 @@ export default function OpsDashboard({ tab }) {
   const attention = overview?.attention || [];
 
   const weaponSummary = useMemo(() => {
-    const issued = weapons.filter((weapon) => weapon.armoury_status === 'ISSUED');
-    const available = weapons.filter((weapon) => weapon.armoury_status === 'AVAILABLE');
-    const byLocation = issued.reduce((accumulator, weapon) => {
-      const key = weapon.assigned_post_name || 'Unassigned';
-      accumulator[key] = (accumulator[key] || 0) + 1;
-      return accumulator;
+    const issued = weapons.filter((w) => w.armoury_status === 'ISSUED');
+    const available = weapons.filter((w) => w.armoury_status === 'AVAILABLE');
+    const byLocation = issued.reduce((acc, w) => {
+      const k = w.assigned_post_name || 'Unassigned';
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
     }, {});
     return { issued, available, byLocation };
   }, [weapons]);
@@ -134,7 +127,7 @@ export default function OpsDashboard({ tab }) {
   async function decideLeave(row, status) {
     try {
       await api(`/api/leave/${row.id}/decision`, { method: 'POST', body: { status } });
-      setLeave((previous) => previous.filter((item) => item.id !== row.id));
+      setLeave((prev) => prev.filter((item) => item.id !== row.id));
       setToast(`Leave ${status.toLowerCase()} for ${row.guard_name}`);
       load();
     } catch (err) {
@@ -144,26 +137,29 @@ export default function OpsDashboard({ tab }) {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <Spinner label="Connecting to central operations…" />
+      <div className="p-8">
+        <Spinner label="Connecting to Central Operations..." />
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 p-4 lg:p-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6">
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
+
+      {(tab === 'control' || !tab) && (
+        <>
+      {/* Top Banner / Actions Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-base font-black uppercase tracking-[0.16em] text-ink">
-            Central Operations Control Room
-          </h2>
-          <p className="text-[11px] text-muted">
-            {fmtDate(overview?.date)} · Live deployment, attendance and command messaging
+          <h2 className="text-lg font-bold text-slate-800">Operations Control Room</h2>
+          <p className="text-xs text-muted">
+            {fmtDate(overview?.date)} · Live Karachi guard deployment, biometric/GPS feeds & dispatch
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={load}>
-            <RefreshCw size={12} /> Refresh
+        <div className="flex items-center gap-2.5">
+          <Button variant="ghost" onClick={load} className="border border-line bg-white hover:bg-slate-50">
+            <RefreshCw size={13} /> Refresh
           </Button>
           <Button
             onClick={() =>
@@ -173,37 +169,80 @@ export default function OpsDashboard({ tab }) {
               ).catch((err) => setError(err.message))
             }
           >
-            <Download size={12} /> SITREP
+            <Download size={13} /> SITREP Export
           </Button>
         </div>
       </div>
 
-      <ErrorBanner message={error} onDismiss={() => setError(null)} />
-
       <OverdueCheckInAlerts />
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6">
-        <Kpi label="Registered guards" value={kpis.total_guards ?? '—'} />
-        <Kpi label="Guard on duty" value={kpis.on_duty ?? '—'} tone="green" />
-        <Kpi label="Absent" value={kpis.absent ?? '—'} tone={(kpis.absent || 0) > 0 ? 'yellow' : 'neutral'} />
-        <Kpi label="Vacant posts" value={kpis.vacant_posts ?? '—'} tone={(kpis.vacant_posts || 0) > 0 ? 'red' : 'green'} />
-        <Kpi
-          label="Active emergencies"
-          value={kpis.active_emergencies ?? '—'}
-          tone={(kpis.active_emergencies || 0) > 0 ? 'red' : 'green'}
-        />
-        <Kpi label="Weapons issued" value={kpis.weapons_issued ?? '—'} hint={`${kpis.weapons_in_armoury ?? 0} in armoury`} />
+      {/* Attendance & Strength Summary Header (matching user's screenshot) */}
+      <div>
+        <div className="flex items-center justify-between pb-3">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Attendance Summary</h3>
+          <span className="text-xs font-medium text-muted">Real-Time Deployed Status</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <Kpi
+            label="Total Strength"
+            value={kpis.total_guards ?? '—'}
+            tone="green"
+            onClick={() => setModalType('SHIFTS')}
+          />
+          <Kpi
+            label="Guards On Duty"
+            value={kpis.on_duty ?? '0'}
+            tone="green"
+            onClick={() => setModalType('ON_DUTY')}
+          />
+          <Kpi
+            label="Absent"
+            value={kpis.absent ?? '0'}
+            tone={kpis.absent > 0 ? "yellow" : "neutral"}
+            onClick={() => setModalType('ABSENT')}
+          />
+          <Kpi
+            label="Vacant Posts"
+            value={kpis.vacant_posts ?? '0'}
+            tone={kpis.vacant_posts > 0 ? "red" : "green"}
+            onClick={() => setModalType('VACANT')}
+          />
+          <Kpi
+            label="Weapons Issued"
+            value={kpis.weapons_issued ?? '0'}
+            hint={`${kpis.weapons_in_armoury ?? 0} in armoury`}
+            tone="info"
+            onClick={() => setModalType('WEAPONS')}
+          />
+          <Kpi
+            label="Active Incidents"
+            value={kpis.active_emergencies ?? '0'}
+            tone={kpis.active_emergencies > 0 ? "red" : "neutral"}
+            onClick={() => setModalType('EMERGENCIES')}
+          />
+        </div>
       </div>
+
+        </>
+      )}
 
       {(tab === 'control' || !tab) && (
         <>
-          <div className="grid gap-4 xl:grid-cols-12">
+          <GuardTrendPanel
+            role="OPS_MANAGER"
+            zones={zones}
+            locations={locations}
+            guards={guards}
+          />
+
+          <div className="grid gap-6 xl:grid-cols-12">
+            {/* Deployment Tree */}
             <Panel
-              className="xl:col-span-3"
-              title="Deployment tree"
+              className="xl:col-span-4"
+              title="Deployment Tree"
               subtitle={`${zones.length} zones · ${locations.length} sites`}
             >
-              <div className="max-h-[520px] overflow-y-auto pr-1">
+              <div className="max-h-[500px] overflow-y-auto pr-1">
                 <DeploymentTree
                   zones={zones}
                   locations={locations}
@@ -215,10 +254,11 @@ export default function OpsDashboard({ tab }) {
               </div>
             </Panel>
 
-            <div className="space-y-4 xl:col-span-6">
+            {/* Map & Live Stream */}
+            <div className="space-y-6 xl:col-span-8">
               <Panel
-                title="Live operations map"
-                subtitle="Colour-coded geofences · click a pin for the roster"
+                title="Live Operations Map"
+                subtitle="Geofences and real-time site pins"
                 actions={<Badge tone="info">{locations.length} sites</Badge>}
                 bodyClassName="p-3"
               >
@@ -229,13 +269,13 @@ export default function OpsDashboard({ tab }) {
                     setSelectedSite(site);
                     setRosterSite(site);
                   }}
-                  className="h-72"
+                  className="h-80"
                 />
               </Panel>
 
               <Panel
-                title="Live attendance stream"
-                subtitle="GPS/QR verified vs supervisor verified"
+                title="Live Attendance Stream"
+                subtitle="Real-time verified biometric and GPS punches"
                 actions={<Badge tone="green">{stream.length} recent</Badge>}
               >
                 <div className="max-h-64 overflow-y-auto pr-1">
@@ -243,8 +283,10 @@ export default function OpsDashboard({ tab }) {
                 </div>
               </Panel>
             </div>
+          </div>
 
-            <Panel className="xl:col-span-3" title="Command & emergency messaging">
+          <div className="grid gap-6 lg:grid-cols-3">
+            <Panel title="Command Messaging">
               <BroadcastCenter
                 broadcasts={broadcasts}
                 zones={zones}
@@ -253,40 +295,20 @@ export default function OpsDashboard({ tab }) {
                 onChanged={load}
               />
             </Panel>
-          </div>
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Panel
-              title="Weapons & ammunition"
-              subtitle={`${weaponSummary.issued.length} issued · ${weaponSummary.available.length} in armoury`}
-            >
-              {Object.entries(weaponSummary.byLocation).length === 0 && (
-                <EmptyState title="No weapons issued" hint="All serials accounted for in the armoury." />
-              )}
-              <ul className="space-y-1.5">
-                {Object.entries(weaponSummary.byLocation).map(([location, count]) => (
-                  <li key={location} className="flex items-center justify-between text-[11px]">
-                    <span className="truncate text-muted">{location}</span>
-                    <span className="font-mono font-bold text-ink">{count}</span>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-
-            <Panel title="Pending leave" subtitle="Approved leave reduces available manpower">
+            <Panel title="Pending Leave Requests" subtitle="Approvals adjust live deployed strength">
               {leave.length === 0 && <EmptyState title="No pending leave" />}
-              <ul className="divide-y divide-line/60">
+              <ul className="divide-y divide-line">
                 {leave.slice(0, 5).map((row) => (
-                  <li key={row.id} className="py-2">
+                  <li key={row.id} className="py-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="truncate text-[11px] font-semibold text-ink">{row.guard_name}</p>
+                        <p className="truncate text-xs font-semibold text-slate-800">{row.guard_name}</p>
                         <p className="text-[10px] text-muted">
-                          {row.leave_type.replaceAll('_', ' ')} · {fmtDate(row.start_date)} →{' '}
-                          {fmtDate(row.end_date)}
+                          {row.leave_type.replaceAll('_', ' ')} · {fmtDate(row.start_date)} → {fmtDate(row.end_date)}
                         </p>
                       </div>
-                      <div className="flex gap-1">
+                      <div className="flex gap-1.5">
                         <Button size="sm" variant="primary" onClick={() => decideLeave(row, 'APPROVED')}>
                           Approve
                         </Button>
@@ -300,19 +322,19 @@ export default function OpsDashboard({ tab }) {
               </ul>
             </Panel>
 
-            <Panel title="Attention required" subtitle="Weakest sites & flagged activity">
+            <Panel title="Attention Flags" subtitle="Sites requiring operational support">
               {attention.length === 0 && <EmptyState title="All sites within tolerance" />}
-              <ul className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
+              <ul className="max-h-60 space-y-2 overflow-y-auto pr-1">
                 {attention.slice(0, 6).map((item, index) => (
                   <li
                     key={`${item.kind}-${item.location_id}-${index}`}
-                    className="rounded-lg border border-line bg-panelAlt/50 px-2 py-1.5"
+                    className="rounded-xl border border-line bg-slate-50 p-2.5"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-[10px] font-bold text-ink">{item.location_name}</p>
+                      <p className="truncate text-xs font-bold text-slate-800">{item.location_name}</p>
                       <Badge tone={toneForStatus(item.severity)}>{item.kind.replaceAll('_', ' ')}</Badge>
                     </div>
-                    <p className="text-[10px] text-muted">{item.reason}</p>
+                    <p className="text-[11px] text-muted mt-0.5">{item.reason}</p>
                   </li>
                 ))}
               </ul>
@@ -330,7 +352,7 @@ export default function OpsDashboard({ tab }) {
       )}
 
       {tab === 'weapons' && (
-        <Panel title="Armoury register" subtitle="Issue, verify and reconcile weapons">
+        <Panel title="Armoury Register" subtitle="Issue, verify and reconcile weapons">
           <ArmouryPanel
             weapons={weapons}
             guards={guards}
@@ -346,11 +368,11 @@ export default function OpsDashboard({ tab }) {
       )}
 
       {tab === 'incidents' && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Incident triage" subtitle="All incidents in your command scope">
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Panel title="Incident Triage" subtitle="Operational incidents">
             <IncidentPanel incidents={incidents} onChanged={load} />
           </Panel>
-          <Panel title="Emergencies & client complaints" subtitle="Severity feeds from active sites">
+          <Panel title="Emergencies & Complaints">
             <IncidentPanel
               incidents={incidents.filter((incident) =>
                 ['CLIENT_COMPLAINT', 'FIRE', 'ATTEMPTED_INTRUSION', 'WEAPON_INCIDENT'].includes(
@@ -373,11 +395,24 @@ export default function OpsDashboard({ tab }) {
         onChanged={load}
       />
 
+      <AttendanceDetailModal
+        type={modalType}
+        onClose={() => setModalType(null)}
+        guards={guards}
+        locations={locations}
+        zones={zones}
+        weapons={weapons}
+        incidents={incidents}
+        leave={leave}
+        onDutyIds={overview?.on_duty_ids || []}
+        absentIds={overview?.absent_ids || []}
+      />
+
       {toast && (
-        <div className="fixed bottom-4 right-4 z-[1200] max-w-sm animate-slide-in rounded-xl border border-accent/40 bg-panel px-3 py-2 text-[11px] text-ink shadow-xl">
+        <div className="fixed bottom-5 right-5 z-[1200] max-w-sm rounded-2xl border border-slate-200 bg-white p-4 shadow-xl transition-all">
           <div className="flex items-start gap-3">
             <StatusBadge status="PRESENT" label="Live" />
-            <p className="flex-1">{toast}</p>
+            <p className="flex-1 text-xs font-semibold text-slate-800">{toast}</p>
           </div>
         </div>
       )}

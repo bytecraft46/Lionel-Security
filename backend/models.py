@@ -73,11 +73,13 @@ BROADCAST_CATEGORIES = (
     "REINFORCEMENT",
 )
 INCIDENT_TYPES = (
+    "PANIC",
     "THEFT",
     "BURGLARY",
     "ATTEMPTED_INTRUSION",
     "FIRE",
     "MEDICAL_EMERGENCY",
+    "ACCIDENT",
     "SUSPICIOUS_ACTIVITY",
     "GUARD_MISCONDUCT",
     "CLIENT_COMPLAINT",
@@ -832,6 +834,7 @@ class Incident(db.Model):
             "zone_name": self.zone.name if self.zone else None,
             "reported_by_id": self.reported_by_id,
             "reported_by_name": self.reporter.full_name if self.reporter else None,
+            "reported_by_role": self.reporter.role if self.reporter else None,
             "personnel_involved": self.personnel_involved,
             "occurred_at": self.occurred_at.isoformat()
             if self.occurred_at

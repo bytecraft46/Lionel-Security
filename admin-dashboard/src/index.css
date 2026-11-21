@@ -9,184 +9,144 @@
     height: 100%;
   }
   body {
-    @apply bg-base text-ink antialiased;
-    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  }
-  ::selection {
-    @apply bg-violet/20 text-ink;
+    background-color: #F4F6F9;
+    color: #1E293B;
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #f5f4fb;
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #d8d3ea;
-    border-radius: 6px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #c3bcdc;
+    background: #CBD5E1;
+    border-radius: 9999px;
   }
 }
 
 @layer components {
-  .app-bg {
-    background:
-      radial-gradient(1100px 560px at 8% -12%, rgba(124, 58, 237, 0.1), transparent 62%),
-      radial-gradient(900px 480px at 102% -6%, rgba(6, 182, 212, 0.08), transparent 58%),
-      #f5f4fb;
-  }
+  /* Crisp clean white panels with soft rounded corners */
   .panel {
-    @apply rounded-2xl border border-line bg-panel;
-    box-shadow: 0 14px 34px -28px rgba(30, 34, 53, 0.45);
+    @apply rounded-2xl border border-line bg-white shadow-card transition-all duration-200;
   }
+
   .panel-head {
-    @apply flex items-start justify-between gap-3 border-b border-line px-4 py-3;
+    @apply flex items-center justify-between gap-3 border-b border-line px-5 py-3.5;
   }
+
   .panel-title {
-    @apply text-xs font-bold uppercase tracking-[0.14em] text-ink;
+    @apply text-xs font-bold uppercase tracking-wider text-ink;
   }
+
   .panel-sub {
-    @apply text-[11px] text-muted;
+    @apply text-[11px] text-muted font-normal;
   }
+
+  /* Pastel Summary KPI Pill Cards matching the user's reference */
+  .summary-pill {
+    @apply relative flex items-center justify-between rounded-xl border p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card;
+  }
+
+  /* Buttons matching modern SaaS style */
   .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-xl border border-line bg-panel px-3.5 py-2 text-[11px] font-semibold text-ink transition-all duration-150;
-    @apply hover:border-violet/40 hover:text-violet disabled:cursor-not-allowed disabled:opacity-50;
-    box-shadow: 0 1px 2px rgba(30, 34, 53, 0.05);
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl border border-line bg-white px-3.5 py-2 text-[11px] font-semibold text-ink shadow-sm transition-all duration-150;
+    @apply hover:border-slate-300 hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
   }
+
   .btn-primary {
-    border-color: transparent;
-    background: linear-gradient(135deg, #8b5cf6, #6d28d9);
-    color: #ffffff;
-    box-shadow: 0 8px 20px rgba(124, 58, 237, 0.25);
+    border-color: #7C3AED;
+    background-color: #7C3AED;
+    color: #FFFFFF !important;
   }
   .btn-primary:hover {
-    color: #ffffff;
-    box-shadow: 0 10px 26px rgba(124, 58, 237, 0.35);
-    transform: translateY(-1px);
+    background-color: #6D28D9;
+    border-color: #6D28D9;
+    box-shadow: 0 4px 12px rgba(124, 58, 237, 0.25);
   }
-  .btn-danger {
-    @apply border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 hover:text-rose-700;
-  }
+
   .btn-ghost {
-    @apply border-line bg-panelAlt text-muted hover:bg-white hover:text-violet;
+    @apply border-transparent bg-transparent text-muted hover:bg-slate-100 hover:text-ink shadow-none;
   }
+
   .btn-sm {
     @apply px-2.5 py-1.5 text-[10px];
   }
+
+  /* Inputs matching the clean search bar in screenshot */
   .input {
-    @apply w-full rounded-xl border border-line bg-panel px-3 py-2 text-xs text-ink placeholder:text-muted/60 focus:border-violet focus:outline-none;
-    box-shadow: 0 1px 2px rgba(30, 34, 53, 0.04);
+    @apply w-full rounded-xl border border-line bg-white px-3.5 py-2 text-xs text-ink placeholder:text-muted/70 focus:border-primary focus:outline-none transition-colors;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
   }
   .input:focus {
-    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.14);
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
   }
+
   .label {
-    @apply mb-1 block text-[10px] font-bold uppercase tracking-[0.12em] text-muted;
+    @apply mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-muted;
   }
+
+  /* Badges matching modern SaaS tags */
   .badge {
-    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide;
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold;
   }
   .badge-green {
-    @apply border-emerald-200 bg-emerald-50 text-emerald-700;
+    @apply bg-emerald-50 text-emerald-700 border border-emerald-200;
   }
   .badge-yellow {
-    @apply border-amber-200 bg-amber-50 text-amber-700;
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
   }
   .badge-red {
-    @apply border-rose-200 bg-rose-50 text-rose-600;
+    @apply bg-rose-50 text-rose-700 border border-rose-200;
   }
   .badge-info {
-    @apply border-cyan-200 bg-cyan-50 text-cyan-700;
+    @apply bg-sky-50 text-sky-700 border border-sky-200;
   }
   .badge-neutral {
-    @apply border-line bg-panelAlt text-muted;
+    @apply bg-slate-100 text-slate-600 border border-slate-200;
   }
-  .kpi {
-    @apply rounded-2xl border border-line bg-panel px-3.5 py-3 transition-all duration-200;
-    box-shadow: 0 8px 22px -22px rgba(30, 34, 53, 0.5);
-  }
-  .kpi:hover {
-    border-color: rgba(124, 58, 237, 0.4);
-    transform: translateY(-2px);
-    box-shadow: 0 14px 30px -20px rgba(124, 58, 237, 0.35);
-  }
-  .kpi-label {
-    @apply block text-[10px] font-bold uppercase tracking-[0.1em] text-muted;
-  }
-  .kpi-value {
-    @apply mt-0.5 block text-[22px] font-black leading-tight tabular-nums text-ink;
-  }
+
+  /* Modern Clean SaaS Table */
   .table-base {
     @apply w-full border-collapse text-left text-[11px];
   }
   .table-base thead th {
-    @apply sticky top-0 z-10 border-b border-line bg-panelAlt px-3 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-muted;
+    @apply border-b border-line bg-slate-50/80 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted;
   }
   .table-base tbody td {
-    @apply border-b border-line/70 px-3 py-2 text-ink/90;
+    @apply border-b border-line/60 px-4 py-2.5 text-ink transition-colors;
   }
   .table-base tbody tr:hover {
-    @apply bg-panelAlt/70;
+    @apply bg-slate-50/70;
   }
-  .nav-item {
-    @apply flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[11px] font-semibold text-muted transition-colors hover:bg-panelAlt hover:text-ink;
-  }
-  .nav-item-active {
-    background: #f1ebfe;
-    color: #6d28d9;
-    box-shadow: inset 3px 0 0 0 #7c3aed;
-  }
+
   .stat-divider {
-    @apply my-3 border-t border-dashed border-line;
+    @apply my-3 border-t border-line;
   }
 }
 
-/* Leaflet treatment */
+/* Leaflet map styles */
 .leaflet-container {
-  background: #eef0f7 !important;
+  background: #EAEFF5 !important;
   font-family: inherit;
 }
 .leaflet-control-attribution {
-  background: rgba(255, 255, 255, 0.85) !important;
-  color: #7c8299 !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #8A97AB !important;
   font-size: 9px !important;
-}
-.leaflet-control-attribution a {
-  color: #7c8299 !important;
+  border-radius: 4px;
 }
 .leaflet-popup-content-wrapper,
 .leaflet-popup-tip {
-  background: #ffffff !important;
-  color: #1e2235 !important;
-  border: 1px solid #e9e5f2 !important;
+  background: #FFFFFF !important;
+  color: #1E293B !important;
+  border: 1px solid #EAEFF5 !important;
   border-radius: 12px !important;
-  box-shadow: 0 16px 32px -20px rgba(30, 34, 53, 0.45) !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08) !important;
 }
 .leaflet-popup-content {
-  margin: 8px 10px !important;
+  margin: 10px 12px !important;
   font-size: 11px !important;
-}
-.site-pin {
-  display: grid;
-  place-items: center;
-  border-radius: 9999px;
-  border: 2px solid #ffffff;
-  box-shadow: 0 0 0 4px rgba(30, 34, 53, 0.12);
-}
-.site-pin-pulse {
-  animation: pin-pulse 1.8s infinite;
-}
-@keyframes pin-pulse {
-  0% {
-    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 16px rgba(239, 68, 68, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0);
-  }
 }

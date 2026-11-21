@@ -439,6 +439,205 @@ class AntiSpoofingTests(BaseCase):
         self.assertEqual(response.status_code, 400)
 
 
+class IncidentAlertFanoutTests(BaseCase):
+    """Field alerts fan out to command, the zone supervisor and guards within 10 km."""
+
+    def setUp(self):
+        super().setUp()
+        self.z3 = Zone(name="Zone Test 3", code="T3")
+        db.session.add(self.z3)
+        db.session.flush()
+        self.p3 = Post(
+            zone_id=self.z3.id,
+            name="Post Three",
+            client_name="Client Three",
+            required_strength=2,
+            lat=30.0000,
+            lng=70.0000,
+            geofence_type="CIRCLE",
+            radius_meters=100.0,
+            qr_code_secret="post-three-secret",
+        )
+        self.p4 = Post(
+            zone_id=self.z3.id,
+            name="Post Three Distant",
+            client_name="Client Three",
+            required_strength=1,
+            lat=30.5000,
+            lng=70.5000,
+            geofence_type="CIRCLE",
+            radius_meters=100.0,
+            qr_code_secret="post-four-secret",
+        )
+        db.session.add_all([self.p3, self.p4])
+        db.session.flush()
+
+        def zone_three_guard(full_name, phone, post=None):
+            post = post or self.p3
+            user = User(
+                full_name=full_name,
+                phone_number=phone,
+                cnic=f"42101-{phone[-7:]}-1",
+                role="GUARD",
+                zone_id=self.z3.id,
+                assigned_post_id=post.id,
+            )
+            user.set_password(PASSWORD)
+            db.session.add(user)
+            db.session.flush()
+            db.session.add(
+                GuardProfile(user_id=user.id, assigned_post_id=post.id, rank="SEP")
+            )
+            return user
+
+        self.reporter3 = zone_three_guard("Zone Three Reporter", "+920000000021")
+        self.near3 = zone_three_guard("Zone Three Neighbour", "+920000000022")
+        self.far3 = zone_three_guard(
+            "Zone Three Distant", "+920000000024", post=self.p4
+        )
+        self.supervisor3 = User(
+            full_name="Zone Three Supervisor",
+            phone_number="+920000000023",
+            role="SUPERVISOR",
+            zone_id=self.z3.id,
+        )
+        self.supervisor3.set_password(PASSWORD)
+        db.session.add(self.supervisor3)
+        db.session.flush()
+        self.supervisor3.zones.append(self.z3)
+        db.session.commit()
+
+    def _socket(self, identifier):
+        client = self.socketio.test_client(
+            self.app, auth={"token": self.login(identifier)["access_token"]}
+        )
+        self.assertTrue(client.is_connected())
+        client.get_received()  # drain GATEWAY_READY
+        return client
+
+    def _events(self, socket):
+        return [message["name"] for message in socket.get_received()]
+
+    def _raise_alert(self):
+        return self.client.post(
+            "/api/incidents",
+            json={
+                "post_id": self.p3.id,
+                "incident_type": "PANIC",
+                "latitude": 30.0,
+                "longitude": 70.0,
+            },
+            headers=self.auth("+920000000021"),
+        )
+
+    def test_alert_reaches_command_zone_supervisor_and_nearby_guards_only(self):
+        ceo_socket = self._socket("+920000000001")
+        ops_socket = self._socket("+920000000002")
+        zone_supervisor_socket = self._socket("+920000000023")
+        other_supervisor_socket = self._socket("+920000000004")
+        nearby_socket = self._socket("+920000000022")
+        same_zone_distant_socket = self._socket("+920000000024")
+        other_zone_socket = self._socket("+920000000011")
+
+        response = self._raise_alert()
+        self.assertEqual(response.status_code, 201, response.get_json())
+        body = response.get_json()
+        self.assertEqual(body["alert"]["radius_km"], 10.0)
+        self.assertEqual(body["alert"]["command_recipients"], 2)
+        self.assertEqual(body["alert"]["supervisor_recipients"], 1)
+        self.assertEqual(body["alert"]["nearby_guard_count"], 1)
+
+        for socket in (ceo_socket, ops_socket, zone_supervisor_socket, nearby_socket):
+            self.assertIn("INCIDENT_BROADCAST", self._events(socket))
+        for socket in (other_supervisor_socket, same_zone_distant_socket, other_zone_socket):
+            self.assertNotIn("INCIDENT_BROADCAST", self._events(socket))
+
+    def test_reporter_not_re_notified_and_guard_inbox_is_proximity_scoped(self):
+        reporter_socket = self._socket("+920000000021")
+        response = self._raise_alert()
+        self.assertEqual(response.status_code, 201, response.get_json())
+        incident_id = response.get_json()["incident"]["id"]
+        self.assertNotIn("INCIDENT_BROADCAST", self._events(reporter_socket))
+
+        near_ids = {
+            row["id"]
+            for row in self.client.get(
+                "/api/incidents", headers=self.auth("+920000000022")
+            ).get_json()["incidents"]
+        }
+        self.assertIn(incident_id, near_ids)
+
+        for identifier in ("+920000000024", "+920000000011"):
+            far_ids = {
+                row["id"]
+                for row in self.client.get(
+                    "/api/incidents", headers=self.auth(identifier)
+                ).get_json()["incidents"]
+            }
+            self.assertNotIn(incident_id, far_ids)
+
+        zone_supervisor_ids = {
+            row["id"]
+            for row in self.client.get(
+                "/api/incidents", headers=self.auth("+920000000023")
+            ).get_json()["incidents"]
+        }
+        self.assertIn(incident_id, zone_supervisor_ids)
+
+        other_supervisor_ids = {
+            row["id"]
+            for row in self.client.get(
+                "/api/incidents", headers=self.auth("+920000000004")
+            ).get_json()["incidents"]
+        }
+        self.assertNotIn(incident_id, other_supervisor_ids)
+
+        inbox = self.client.get(
+            f"/api/alerts/user/{self.near3.id}", headers=self.auth("+920000000022")
+        )
+        self.assertEqual(inbox.status_code, 200)
+        self.assertIn(incident_id, [row["id"] for row in inbox.get_json()["incidents"]])
+        self.assertEqual(
+            self.client.get(
+                f"/api/alerts/user/{self.near3.id}", headers=self.auth("+920000000011")
+            ).status_code,
+            403,
+        )
+
+    def test_mobile_sos_alias_uses_same_fanout(self):
+        nearby_socket = self._socket("+920000000022")
+        response = self.client.post(
+            "/api/alerts/trigger",
+            json={
+                "incident_type": "MEDICAL",
+                "notes": "Guard collapsed at gate",
+                "latitude": 30.0,
+                "longitude": 70.0,
+            },
+            headers=self.auth("+920000000021"),
+        )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        incident = response.get_json()["incident"]
+        self.assertEqual(incident["incident_type"], "MEDICAL_EMERGENCY")
+        self.assertEqual(incident["reported_by_id"], self.reporter3.id)
+        self.assertEqual(response.get_json()["alert"]["nearby_guard_count"], 1)
+        self.assertIn("INCIDENT_BROADCAST", self._events(nearby_socket))
+
+        invalid = self.client.post(
+            "/api/alerts/trigger",
+            json={"incident_type": "NOT_A_TYPE"},
+            headers=self.auth("+920000000021"),
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        complaint = self.client.post(
+            "/api/alerts/trigger",
+            json={"incident_type": "CLIENT_COMPLAINT"},
+            headers=self.auth("+920000000021"),
+        )
+        self.assertEqual(complaint.status_code, 403)
+
+
 class NoFinancialScopeTests(BaseCase):
     FORBIDDEN = (
         "salary",

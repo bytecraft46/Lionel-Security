@@ -1,17 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import { api } from '../../lib/http';
 import { useSocketEvent } from '../../lib/socket';
 import { fmtTime } from '../../lib/format';
 import { Badge } from '../../components/ui';
 
-/**
- * Live overdue check-in banner. The API is already zone scoped, so the CEO and
- * Operations Manager see every guard while a supervisor only sees their zone.
- */
 export default function OverdueCheckInAlerts() {
   const [alerts, setAlerts] = useState([]);
   const [grace, setGrace] = useState(5);
+  const [collapsed, setCollapsed] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -19,7 +16,7 @@ export default function OverdueCheckInAlerts() {
       setAlerts(data.alerts || []);
       setGrace(data.grace_minutes ?? 5);
     } catch {
-      /* the banner stays hidden while the API is unreachable */
+      /* unreachable */
     }
   }, []);
 
@@ -35,54 +32,68 @@ export default function OverdueCheckInAlerts() {
   if (!alerts.length) return null;
 
   return (
-    <div className="rounded-xl border border-rose-200 bg-rose-50">
-      <div className="flex items-center gap-3 border-b border-rose-200/70 px-4 py-2.5">
-        <span className="grid h-8 w-8 flex-shrink-0 animate-pulse place-items-center rounded-full bg-rose-100 text-rose-600">
-          <AlertTriangle size={16} />
-        </span>
-        <div className="min-w-0">
-          <p className="text-[11px] font-black uppercase tracking-wide text-rose-700">
-            {alerts.length} guard{alerts.length === 1 ? '' : 's'} have not checked in
-          </p>
-          <p className="text-[10px] text-rose-700/80">
-            Duty start missed by more than {grace} minutes · refreshes automatically
-          </p>
+    <div className="rounded-2xl border border-rose-200 bg-[#FDF2F0] overflow-hidden shadow-xs">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-rose-100">
+        <div className="flex items-center gap-3">
+          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl bg-white text-rose-600 shadow-xs">
+            <AlertTriangle size={16} />
+          </span>
+          <div>
+            <p className="text-xs font-bold text-rose-800">
+              {alerts.length} Guard{alerts.length === 1 ? '' : 's'} Overdue for Check-In
+            </p>
+            <p className="text-[11px] text-rose-600/80">
+              Duty start missed by {grace}+ minutes
+            </p>
+          </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 shadow-xs"
+        >
+          <span>{collapsed ? `View All (${alerts.length})` : 'Collapse'}</span>
+          {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        </button>
       </div>
-      <ul className="max-h-44 divide-y divide-rose-200/60 overflow-y-auto">
-        {alerts.map((alert) => (
-          <li
-            key={alert.guard_id}
-            className="flex flex-wrap items-center justify-between gap-2 px-4 py-2"
-          >
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold text-rose-800">
-                {alert.guard_name}{' '}
-                <span className="font-normal text-rose-700/80">
-                  · {alert.employee_id || 'No ID'}
+
+      {!collapsed && (
+        <ul className="max-h-48 divide-y divide-rose-100 overflow-y-auto bg-white/60">
+          {alerts.map((alert) => (
+            <li
+              key={alert.guard_id}
+              className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 hover:bg-white/90"
+            >
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-800">
+                  {alert.guard_name}{' '}
+                  <span className="font-normal text-muted">
+                    · {alert.employee_id || 'No ID'}
+                  </span>
+                </p>
+                <p className="truncate text-[10px] text-muted">
+                  {[
+                    alert.post_name,
+                    alert.zone_name,
+                    alert.duty_start && alert.duty_end
+                      ? `${alert.duty_start}–${alert.duty_end}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              </div>
+              <div className="flex flex-shrink-0 items-center gap-2">
+                <span className="font-mono text-xs text-rose-600 font-medium">
+                  Due {fmtTime(alert.shift_start)}
                 </span>
-              </p>
-              <p className="truncate text-[10px] text-rose-700/80">
-                {[
-                  alert.post_name,
-                  alert.zone_name,
-                  alert.duty_start && alert.duty_end
-                    ? `${alert.duty_start}–${alert.duty_end}`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </p>
-            </div>
-            <div className="flex flex-shrink-0 items-center gap-2">
-              <span className="font-mono text-[10px] text-rose-700">
-                due {fmtTime(alert.shift_start)}
-              </span>
-              <Badge tone="red">{alert.minutes_late} min late</Badge>
-            </div>
-          </li>
-        ))}
-      </ul>
+                <Badge tone="red">{alert.minutes_late}m late</Badge>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

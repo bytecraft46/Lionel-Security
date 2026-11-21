@@ -97,10 +97,12 @@ export default function BroadcastCenter({ broadcasts = [], zones = [], locations
               key={broadcast.id}
               type="button"
               onClick={() => openDetail(broadcast)}
-              className="w-full rounded-xl border border-line bg-panelAlt/50 p-2.5 text-left transition-colors hover:border-accent/40"
+              className="w-full rounded-xl border border-line bg-panel p-3 text-left transition-all hover:border-indigo-400 hover:bg-panelAlt group shadow-sm"
             >
               <div className="flex items-start justify-between gap-2">
-                <p className="text-[11px] font-bold text-ink">{broadcast.title}</p>
+                <p className="text-xs font-bold text-ink group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                  {broadcast.title}
+                </p>
                 <Badge
                   tone={
                     broadcast.priority === 'CRITICAL'
@@ -113,28 +115,28 @@ export default function BroadcastCenter({ broadcasts = [], zones = [], locations
                   {broadcast.priority}
                 </Badge>
               </div>
-              <p className="mt-0.5 line-clamp-2 text-[10px] text-muted">{broadcast.message}</p>
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <p className="mt-1 line-clamp-2 text-[11px] text-muted font-normal leading-relaxed">{broadcast.message}</p>
+              <div className="mt-2.5 grid grid-cols-2 gap-2.5">
                 <div>
-                  <p className="mb-1 flex justify-between text-[9px] uppercase tracking-wide text-muted">
+                  <p className="mb-1 flex justify-between text-[9px] font-bold uppercase tracking-wide text-muted">
                     <span>Received</span>
-                    <span className="font-mono">
+                    <span className="font-mono text-ink">
                       {received}/{total}
                     </span>
                   </p>
                   <ProgressBar value={total ? received / total : 0} tone="green" />
                 </div>
                 <div>
-                  <p className="mb-1 flex justify-between text-[9px] uppercase tracking-wide text-muted">
-                    <span>Action taken</span>
-                    <span className="font-mono">
+                  <p className="mb-1 flex justify-between text-[9px] font-bold uppercase tracking-wide text-muted">
+                    <span>Action Taken</span>
+                    <span className="font-mono text-ink">
                       {acted}/{total}
                     </span>
                   </p>
                   <ProgressBar value={total ? acted / total : 0} tone={acted < total ? 'yellow' : 'green'} />
                 </div>
               </div>
-              <p className="mt-1.5 text-[9px] text-muted/70">
+              <p className="mt-2 text-[9px] font-medium text-muted">
                 {broadcast.category.replaceAll('_', ' ')} · {fmtDateTime(broadcast.created_at)}
               </p>
             </button>

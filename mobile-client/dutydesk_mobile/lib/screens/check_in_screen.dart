@@ -172,7 +172,7 @@ class _CheckInScreenState extends State<CheckInScreen> {
         _showAlert("Punch Rejected", data['error'] ?? "Verification error", isError: true);
       }
     } catch (e) {
-      _showAlert("Network Communication Error", "Could not reach DutyDesk backend: $e", isError: true);
+      _showAlert("Network Communication Error", "Could not reach Lionel Security backend: $e", isError: true);
     } finally {
       if (mounted) {
         setState(() {
